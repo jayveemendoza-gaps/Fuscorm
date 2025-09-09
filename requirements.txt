@@ -1,5 +1,5 @@
 # Core Streamlit App Dependencies
-streamlit>=1.28.0
+streamlit==1.26.0
 
 # Image Processing and Computer Vision
 opencv-python>=4.8.0
