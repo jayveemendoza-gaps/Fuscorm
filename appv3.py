@@ -159,8 +159,8 @@ def create_selection_canvas(image, canvas_key="canvas"):
         # Get image dimensions
         img_width, img_height = canvas_image.size
         
-        # Scale down for canvas if too large
-        max_canvas_size = 600
+        # Scale down for canvas if too large - more aggressive for cloud stability
+        max_canvas_size = 400  # Reduced from 600 for better cloud performance
         if max(img_width, img_height) > max_canvas_size:
             scale_factor = max_canvas_size / max(img_width, img_height)
             canvas_width = int(img_width * scale_factor)
@@ -169,6 +169,14 @@ def create_selection_canvas(image, canvas_key="canvas"):
         else:
             canvas_width, canvas_height = img_width, img_height
             scale_factor = 1.0
+        
+        # Ensure minimum canvas size for usability
+        min_size = 200
+        if canvas_width < min_size or canvas_height < min_size:
+            scale = min_size / min(canvas_width, canvas_height)
+            canvas_width = int(canvas_width * scale)
+            canvas_height = int(canvas_height * scale)
+            canvas_image = canvas_image.resize((canvas_width, canvas_height), Image.Resampling.LANCZOS)
         
         # Streamlined selection tools
         col1, col2, col3 = st.columns([2, 2, 1])
@@ -248,19 +256,25 @@ def create_selection_canvas(image, canvas_key="canvas"):
         if shape_type == "Polygon" and polygon_input_mode is not None and "Point mode" in polygon_input_mode:
             st.info("🔷 **Polygon Point Mode:** Click on the image to add polygon vertices. Click at least 3 points to define your shape. Double-click the last point or press ESC to close/finish the polygon. The area inside your polygon will be selected for analysis.")
         
-        # Create canvas with essential settings only
-        canvas_result = st_canvas(
-            fill_color="rgba(255, 0, 0, 0.2)",
-            stroke_width=2,
-            stroke_color="#FF0000",
-            background_image=canvas_image,
-            update_streamlit=True,
-            height=canvas_height,
-            width=canvas_width,
-            drawing_mode=drawing_mode,
-            key=canvas_key,
-            display_toolbar=False,  # Hide toolbar for cleaner interface
-        )
+        # Create canvas with cloud-optimized settings
+        try:
+            canvas_result = st_canvas(
+                fill_color="rgba(255, 0, 0, 0.2)",
+                stroke_width=2,
+                stroke_color="#FF0000",
+                background_image=canvas_image,
+                update_streamlit=True,
+                height=canvas_height,
+                width=canvas_width,
+                drawing_mode=drawing_mode,
+                key=canvas_key,
+                display_toolbar=False,  # Hide toolbar for cleaner interface
+                point_display_radius=3,  # Smaller points for better performance
+            )
+        except Exception as canvas_error:
+            st.error(f"Canvas initialization failed: {canvas_error}")
+            st.warning("Falling back to alternative selection method...")
+            return create_alternative_selection(image, canvas_key + "_fallback")
         
         return canvas_result, scale_factor, shape_type
         
@@ -1283,11 +1297,21 @@ def main():
     </div>
     """, unsafe_allow_html=True)
     
-    # Initialize session state
+    # Initialize session state with memory optimization
     if 'processed_image' not in st.session_state:
         st.session_state.processed_image = None
     if 'canvas_result' not in st.session_state:
         st.session_state.canvas_result = None
+    
+    # Cloud performance optimization: Clean up large objects periodically
+    if 'cleanup_counter' not in st.session_state:
+        st.session_state.cleanup_counter = 0
+    st.session_state.cleanup_counter += 1
+    
+    # Clean up every 10 interactions to prevent memory buildup
+    if st.session_state.cleanup_counter % 10 == 0:
+        import gc
+        gc.collect()
     
     # Sidebar - Streamlined
     with st.sidebar:
@@ -1345,16 +1369,29 @@ def main():
 
             if st.button("📋 Prepare Image", type="primary"):
                 with st.spinner("Processing..."):
-                    img_array = np.array(original_image)
-                    if processing_option == "Skip Processing":
-                        processed_image = img_array
-                    elif processing_option == "Color Filtering":
-                        alpha_mask = np.ones(img_array.shape[:2], dtype=bool)
-                        processed_image = filter_corm_colors(img_array, alpha_mask)
-                    else:  # AI Background Removal
-                        processed_image = remove_background_and_filter_colors(original_image)
-                    st.session_state.processed_image = processed_image
-                    st.success("✅ Image prepared!")
+                    try:
+                        img_array = np.array(original_image)
+                        if processing_option == "Skip Processing":
+                            processed_image = img_array
+                        elif processing_option == "Color Filtering":
+                            alpha_mask = np.ones(img_array.shape[:2], dtype=bool)
+                            processed_image = filter_corm_colors(img_array, alpha_mask)
+                        else:  # AI Background Removal
+                            processed_image = remove_background_and_filter_colors(original_image)
+                        
+                        # Ensure processed image is not too large for memory
+                        if processed_image.size > 2000000:  # ~2MP limit
+                            st.warning("Large image detected. Optimizing for cloud performance...")
+                            height, width = processed_image.shape[:2]
+                            scale = np.sqrt(2000000 / processed_image.size)
+                            new_height, new_width = int(height * scale), int(width * scale)
+                            processed_image = cv2.resize(processed_image, (new_width, new_height), interpolation=cv2.INTER_AREA)
+                        
+                        st.session_state.processed_image = processed_image
+                        st.success("✅ Image prepared!")
+                    except Exception as e:
+                        st.error(f"Image processing failed: {e}")
+                        st.info("Try using 'Skip Processing' option for large or complex images.")
 
             # Display images
             col1, col2 = st.columns([1, 1])
