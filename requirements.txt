@@ -8,6 +8,7 @@ numpy>=1.24.0
 
 # Background Removal (AI)
 rembg>=2.0.50
+onnxruntime>=1.15.0
 
 # Color Space Conversion
 colorspacious>=1.1.2
