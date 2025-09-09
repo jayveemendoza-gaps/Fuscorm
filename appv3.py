@@ -269,7 +269,6 @@ def create_selection_canvas(image, canvas_key="canvas"):
                 drawing_mode=drawing_mode,
                 key=canvas_key,
                 display_toolbar=False,  # Hide toolbar for cleaner interface
-                point_display_radius=3,  # Smaller points for better performance
             )
         except Exception as canvas_error:
             st.error(f"Canvas initialization failed: {canvas_error}")
