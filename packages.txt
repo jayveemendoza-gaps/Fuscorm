@@ -1,23 +1,10 @@
-# System packages required for Streamlit Cloud deployment
-# These are installed via apt-get on the Ubuntu-based Streamlit Cloud environment
-
-# Required for OpenCV (cv2) to work properly
 libgl1-mesa-glx
 libglib2.0-0
 libsm6
 libxext6
 libxrender-dev
 libgomp1
-
-# Required for image processing and computer vision
-libgthread-2.0-0
 libgtk-3-0
-
-# Required for AI background removal (rembg) and deep learning models
-libglib2.0-0
-libglib2.0-dev
-
-# Additional dependencies that might be needed
 ffmpeg
 libfontconfig1
 libxrender1
