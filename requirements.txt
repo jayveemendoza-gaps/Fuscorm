@@ -1,27 +1,11 @@
-# Core Streamlit App Dependencies
-streamlit==1.25.0
-
-# Image Processing and Computer Vision
-opencv-python>=4.8.0
-Pillow>=9.5.0
-numpy>=1.24.0
-
-# Background Removal (AI)
-rembg>=2.0.50
-onnxruntime>=1.15.0
-
-# Color Space Conversion
-colorspacious>=1.1.2
-
-# Data Analysis and Machine Learning
-pandas>=2.0.0
-scikit-learn>=1.3.0
-
-# Interactive Plotting
-plotly>=5.15.0
-
-# Interactive Canvas for Streamlit
-streamlit-drawable-canvas==0.8.0
-
-# Standard Library (included in Python, but listing for clarity)
-# datetime, io, base64, json, hashlib are built-in modules
+streamlit==1.29.0
+numpy==1.24.3
+opencv-python-headless==4.8.1.78
+Pillow==10.0.1
+pandas==2.0.3
+colorspacious==1.1.2
+plotly==5.15.0
+scikit-learn==1.3.0
+streamlit-drawable-canvas==0.9.3
+rembg==2.0.50
+onnxruntime==1.15.1
