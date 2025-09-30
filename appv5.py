@@ -1903,6 +1903,18 @@ def main():
             # Convert PIL to numpy for canvas
             image_np = np.array(original_image)
             
+            # Ensure image is in RGB format for cloud compatibility
+            if len(image_np.shape) == 3 and image_np.shape[2] == 4:
+                # Convert RGBA to RGB
+                image_rgb = cv2.cvtColor(image_np, cv2.COLOR_RGBA2RGB)
+            elif len(image_np.shape) == 3:
+                image_rgb = cv2.cvtColor(image_np, cv2.COLOR_BGR2RGB)
+            else:
+                image_rgb = cv2.cvtColor(image_np, cv2.COLOR_GRAY2RGB)
+            
+            # Convert back to PIL for canvas (cloud-compatible format)
+            canvas_background = Image.fromarray(image_rgb.astype('uint8'), 'RGB')
+            
             col1, col2 = st.columns([2, 1])
             
             with col1:
@@ -1916,16 +1928,21 @@ def main():
                         fill_color="rgba(0,0,0,0)",
                         stroke_width=3,
                         stroke_color="rgba(255,0,0,1)",
-                        background_image=original_image,
+                        background_image=canvas_background,
                         update_streamlit=True,
-                        height=min(image_np.shape[0], 400),  # Limit height for better display
-                        width=min(image_np.shape[1], 600),   # Limit width for better display
+                        height=min(image_rgb.shape[0], 400),  # Limit height for better display
+                        width=min(image_rgb.shape[1], 600),   # Limit width for better display
                         drawing_mode="line",
                         key=f"scale_calibration_canvas_{st.session_state.scale_canvas_clear_counter}",
                         display_toolbar=False,
                     )
                 except Exception as e:
                     st.error(f"Canvas error: {e}")
+                    st.info(f"Image format: {original_image.format}, Mode: {original_image.mode}, Size: {original_image.size}")
+                    st.info("💡 **Workaround:** If canvas appears white, try:")
+                    st.markdown("- Upload a different image format (JPG instead of PNG)")
+                    st.markdown("- Refresh the page and try again")
+                    st.markdown("- Use a smaller image size")
                     scale_canvas = None
             
             with col2:
