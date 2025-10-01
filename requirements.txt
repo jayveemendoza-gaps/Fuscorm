@@ -1,4 +1,5 @@
-streamlit==1.29.0
+# Tested working versions for Streamlit Cloud
+streamlit==1.25.0
 numpy==1.24.3
 opencv-python-headless==4.8.1.78
 Pillow==10.0.1
@@ -6,6 +7,6 @@ pandas==2.0.3
 colorspacious==1.1.2
 plotly==5.15.0
 scikit-learn==1.3.0
-streamlit-drawable-canvas==0.9.3
+streamlit-drawable-canvas==0.8.0
 rembg==2.0.50
 onnxruntime==1.15.1

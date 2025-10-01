@@ -1900,20 +1900,23 @@ def main():
             if 'mm_per_px' not in st.session_state:
                 st.session_state.mm_per_px = None
             
-            # Convert PIL to numpy for canvas
+            # Convert PIL to numpy array - same as working main canvas
             image_np = np.array(original_image)
             
-            # Ensure image is in RGB format for cloud compatibility
-            if len(image_np.shape) == 3 and image_np.shape[2] == 4:
-                # Convert RGBA to RGB
-                image_rgb = cv2.cvtColor(image_np, cv2.COLOR_RGBA2RGB)
-            elif len(image_np.shape) == 3:
-                image_rgb = cv2.cvtColor(image_np, cv2.COLOR_BGR2RGB)
+            # Use the same image processing as the working main canvas
+            if len(image_np.shape) == 3 and image_np.shape[2] == 3:
+                # RGB image - use directly
+                canvas_background = Image.fromarray(image_np.astype('uint8'))
+            elif len(image_np.shape) == 3 and image_np.shape[2] == 4:
+                # RGBA image - keep alpha channel like main canvas
+                canvas_background = Image.fromarray(image_np.astype('uint8'))
             else:
-                image_rgb = cv2.cvtColor(image_np, cv2.COLOR_GRAY2RGB)
-            
-            # Convert back to PIL for canvas (cloud-compatible format)
-            canvas_background = Image.fromarray(image_rgb.astype('uint8'), 'RGB')
+                # Convert to RGB if needed
+                if len(image_np.shape) == 2:
+                    image_rgb = cv2.cvtColor(image_np, cv2.COLOR_GRAY2RGB)
+                else:
+                    image_rgb = cv2.cvtColor(image_np, cv2.COLOR_BGR2RGB)
+                canvas_background = Image.fromarray(image_rgb.astype('uint8'))
             
             col1, col2 = st.columns([2, 1])
             
@@ -1924,25 +1927,22 @@ def main():
                     if 'scale_canvas_clear_counter' not in st.session_state:
                         st.session_state.scale_canvas_clear_counter = 0
                     
+                    # Use EXACT same settings as working main canvas
                     scale_canvas = st_canvas(
-                        fill_color="rgba(0,0,0,0)",
-                        stroke_width=3,
-                        stroke_color="rgba(255,0,0,1)",
+                        fill_color="rgba(255, 0, 0, 0.2)",  # Same as main canvas
+                        stroke_width=3,  # Same as main canvas
+                        stroke_color="#FF0000",  # Same as main canvas
                         background_image=canvas_background,
                         update_streamlit=True,
-                        height=min(image_rgb.shape[0], 400),  # Limit height for better display
-                        width=min(image_rgb.shape[1], 600),   # Limit width for better display
+                        height=min(image_np.shape[0], 400),
+                        width=min(image_np.shape[1], 600),
                         drawing_mode="line",
                         key=f"scale_calibration_canvas_{st.session_state.scale_canvas_clear_counter}",
-                        display_toolbar=False,
+                        display_toolbar=False,  # Same as main canvas
                     )
                 except Exception as e:
-                    st.error(f"Canvas error: {e}")
-                    st.info(f"Image format: {original_image.format}, Mode: {original_image.mode}, Size: {original_image.size}")
-                    st.info("💡 **Workaround:** If canvas appears white, try:")
-                    st.markdown("- Upload a different image format (JPG instead of PNG)")
-                    st.markdown("- Refresh the page and try again")
-                    st.markdown("- Use a smaller image size")
+                    st.error(f"Scale canvas error: {e}")
+                    st.error(f"Image shape: {image_np.shape}, Canvas background type: {type(canvas_background)}")
                     scale_canvas = None
             
             with col2:
