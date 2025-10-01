@@ -8,5 +8,3 @@ libgtk-3-0
 ffmpeg
 libfontconfig1
 libxrender1
-libgthread-2.0-0
-libc6-dev
