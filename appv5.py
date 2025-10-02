@@ -46,41 +46,34 @@ def remove_background_and_filter_colors(image):
         image.save(img_bytes, format='PNG')
         img_bytes.seek(0)
         
-        # Remove background using AI with cloud-friendly error handling
-        try:
-            no_bg = remove(img_bytes.getvalue())
-            no_bg_image = Image.open(io.BytesIO(no_bg)).convert('RGBA')
-            no_bg_array = np.array(no_bg_image)
-        except Exception as e:
-            st.warning(f"AI background removal failed ({str(e)}). Using color-based approach...")
-            # Fallback to color-based approach
-            alpha_mask = create_hybrid_mask(img_array)
-            no_bg_array = np.concatenate([img_array, np.ones((*img_array.shape[:2], 1), dtype=np.uint8) * 255], axis=2)
-            no_bg_array[:, :, 3] = (alpha_mask * 255).astype(np.uint8)
+        # --- DIAGNOSTIC STEP: RETURN RAW REMBG OUTPUT ---
+        # Remove background using AI
+        no_bg = remove(img_bytes.getvalue())
+        no_bg_image = Image.open(io.BytesIO(no_bg)).convert('RGBA')
+        no_bg_array = np.array(no_bg_image)
         
-        # Create mask from alpha channel with more permissive threshold
-        alpha_mask = no_bg_array[:, :, 3] > 30  # Lower threshold to keep more tissue
+        # Create a new image with a blue background for visibility
+        # Create a blue background
+        blue_bg = np.array([0, 0, 255], dtype=np.uint8)
+        background = np.full(img_array.shape, blue_bg)
+
+        # Get the alpha mask from the rembg output
+        alpha = no_bg_array[:, :, 3:4] / 255.0
         
-        # If too much was removed (less than 5% remains), use color-based approach
-        if np.sum(alpha_mask) < (alpha_mask.size * 0.05):
-            st.warning("AI background removal was too aggressive. Using hybrid approach...")
-            # Create a more permissive mask based on color analysis
-            alpha_mask = create_hybrid_mask(img_array)
-            no_bg_array = np.concatenate([img_array, np.ones((*img_array.shape[:2], 1), dtype=np.uint8) * 255], axis=2)
+        # Blend the original image with the blue background
+        blended_array = (img_array * alpha + background * (1 - alpha)).astype(np.uint8)
         
-        # Additional refinement: exclude obvious non-corm areas
-        refined_mask = refine_corm_mask(img_array, alpha_mask)
-        
+        return blended_array
+        # --- END DIAGNOSTIC STEP ---
+
     except Exception as e:
         st.warning(f"AI background removal failed: {e}. Using color-based approach.")
         # Fallback to color-based segmentation
         refined_mask = create_hybrid_mask(img_array)
         no_bg_array = np.concatenate([img_array, np.ones((*img_array.shape[:2], 1), dtype=np.uint8) * 255], axis=2)
-    
-    # Apply the refined color filtering
-    filtered_image = filter_corm_colors(no_bg_array[:, :, :3], refined_mask)
-    
-    return filtered_image
+        # Apply the refined color filtering
+        filtered_image = filter_corm_colors(no_bg_array[:, :, :3], refined_mask)
+        return filtered_image
 
 def create_hybrid_mask(img_array):
     """
@@ -107,12 +100,12 @@ def refine_corm_mask(img_array, initial_mask):
     """
     hsv = cv2.cvtColor(img_array, cv2.COLOR_RGB2HSV)
     
-    # Exclude very dark areas that are likely pot/soil
-    not_too_dark = hsv[:, :, 2] > 35
+    # Exclude very dark areas that are likely pot/soil - MATCHING FINAL FILTER
+    not_too_dark = hsv[:, :, 2] > 5 # Was 15
     
     # Exclude areas that are clearly pot material (very dark brown)
     not_pot = ~((hsv[:, :, 0] >= 8) & (hsv[:, :, 0] <= 20) & 
-                (hsv[:, :, 1] > 120) & (hsv[:, :, 2] < 60))
+                (hsv[:, :, 1] > 120) & (hsv[:, :, 2] < 40)) # Relaxed value from 60
     
     # Combine with initial mask
     refined = initial_mask & not_too_dark & not_pot
@@ -161,6 +154,7 @@ def filter_corm_colors(rgb_image, mask):
         'healthy_green': [(35, 40, 60), (75, 180, 200)],   # Healthy green areas
         'light_brown': [(8, 25, 80), (25, 150, 200)],      # Light brown lesions
         'medium_brown': [(5, 40, 50), (20, 180, 160)],     # Medium brown lesions
+        'dark_necrotic': [(0, 0, 10), (30, 255, 85)],      # ADDED: Dark brown/black lesions
         'beige_tan': [(12, 15, 90), (30, 80, 220)]         # Beige/tan tissue
     }
     
@@ -172,18 +166,18 @@ def filter_corm_colors(rgb_image, mask):
         color_mask = cv2.inRange(hsv, lower, upper)
         corm_mask |= (color_mask > 0)
     
-    # Exclude very dark areas (pot, soil, deep shadows)
-    brightness_threshold = hsv[:, :, 2] > 45  # Exclude very dark pixels
+    # Exclude very dark areas (pot, soil, deep shadows) - FINAL ADJUSTMENT
+    brightness_threshold = hsv[:, :, 2] > 5  # Exclude only the absolute darkest pixels (was 15)
     
     # Exclude extremely saturated colors (not natural tissue)
     saturation_filter = hsv[:, :, 1] < 220  # Allow most natural colors
     
-    # Exclude pure black and very dark brown (pot/soil)
-    not_black = ~((hsv[:, :, 2] < 35) & (hsv[:, :, 1] < 50))
+    # Exclude pure black and very dark brown (pot/soil) - RELAXED
+    not_black = ~((hsv[:, :, 2] < 5) & (hsv[:, :, 1] < 50)) # Was value < 10
     
     # Specific exclusions for pot materials
-    exclude_dark_brown = ~cv2.inRange(hsv, np.array([5, 80, 10]), np.array([25, 255, 60]))
-    exclude_pure_black = ~cv2.inRange(hsv, np.array([0, 0, 0]), np.array([180, 255, 30]))
+    exclude_dark_brown = ~cv2.inRange(hsv, np.array([5, 80, 10]), np.array([25, 255, 40])) # Relaxed value from 60
+    exclude_pure_black = ~cv2.inRange(hsv, np.array([0, 0, 0]), np.array([180, 255, 5])) # Relaxed value from 10
     
     # Combine all filters
     final_mask = (corm_mask & 
@@ -738,6 +732,7 @@ def display_analysis_results(analysis_results, context="main"):
             st.markdown("**Lesion Types:**")
             
             # Create colored indicators for each type with pixel counts
+            dark_necrotic_count = np.sum(breakdown['dark_necrotic_mask'])
             dark_count = np.sum(breakdown['dark_brown_mask'])
             normal_count = np.sum(breakdown['normal_brown_mask'])
             yellow_count = np.sum(breakdown['yellowish_brown_mask'])
@@ -762,9 +757,10 @@ def display_analysis_results(analysis_results, context="main"):
             if reddish_pixels > 0:
                 reddish_area_text = format_area_from_breakdown('fusarium_area_mm2', reddish_pixels)
                 reddish_percent = (reddish_pixels / analysis_results['total_corm_pixels']) * 100 if analysis_results['total_corm_pixels'] > 0 else 0
-                st.markdown(f"� **Reddish Brown (Critical):** {reddish_percent:.1f}% {reddish_area_text}")
+                st.markdown(f"🔴 **Reddish Brown (Critical):** {reddish_percent:.1f}% {reddish_area_text}")
             
-            st.markdown(f"� **Dark Brown (Severe):** {breakdown['dark_brown_percent']:.1f}% {format_area_from_breakdown('dark_brown_area_mm2', dark_count)}")
+            st.markdown(f"⚫ **Dark Necrotic (Severe):** {breakdown['dark_necrotic_percent']:.1f}% {format_area_from_breakdown('dark_necrotic_area_mm2', dark_necrotic_count)}")
+            st.markdown(f"🟤 **Dark Brown (Severe):** {breakdown['dark_brown_percent']:.1f}% {format_area_from_breakdown('dark_brown_area_mm2', dark_count)}")
             st.markdown(f"🟠 **Normal Brown (Moderate):** {breakdown['normal_brown_percent']:.1f}% {format_area_from_breakdown('normal_brown_area_mm2', normal_count)}")
             st.markdown(f"🟡 **Yellowish Brown (Early):** {breakdown['yellowish_brown_percent']:.1f}% {format_area_from_breakdown('yellowish_brown_area_mm2', yellow_count)}")
                 
@@ -780,6 +776,7 @@ def display_analysis_results(analysis_results, context="main"):
             st.markdown("**Visualization Legend:**")
             st.markdown("🟢 Green: Analysis area")
             st.markdown("🔴 Bright Red: Reddish brown lesions (critical)")
+            st.markdown("⚫ Black: Dark necrotic lesions (severe)")
             st.markdown("🟤 Dark Red: Dark brown lesions (severe)")
             st.markdown("🟠 Red-Orange: Normal brown lesions (moderate)")
             st.markdown("🟡 Orange: Yellowish brown lesions (early)")
@@ -838,19 +835,24 @@ def create_analysis_overlay(analysis_results):
             fusarium_purple_mask_1d = cv2.inRange(hsv_pixels, fusarium_purple_lower, fusarium_purple_upper)
             fusarium_mask_1d = fusarium_red_mask_1d | fusarium_purple_mask_1d
             
-            # 2. Dark brown lesions (severe browning)
-            dark_brown_lower = np.array([5, 80, 15])
-            dark_brown_upper = np.array([20, 255, 110])
+            # 2. Dark Necrotic/Black lesions - ULTRA INCLUSIVE
+            dark_necrotic_lower = np.array([0, 0, 0])
+            dark_necrotic_upper = np.array([180, 255, 80])  # Increased to 80
+            dark_necrotic_mask_1d = cv2.inRange(hsv_pixels, dark_necrotic_lower, dark_necrotic_upper)
+
+            # 3. Dark brown lesions (severe browning) - BALANCED
+            dark_brown_lower = np.array([0, 40, 30])        # More reasonable thresholds
+            dark_brown_upper = np.array([35, 255, 140])     # Still inclusive but not excessive
             dark_brown_mask_1d = cv2.inRange(hsv_pixels, dark_brown_lower, dark_brown_upper)
             
-            # 3. Normal brown lesions (moderate browning)
-            normal_brown_lower = np.array([8, 70, 60])
-            normal_brown_upper = np.array([25, 255, 170])
+            # 4. Normal brown lesions (moderate browning) - BALANCED
+            normal_brown_lower = np.array([8, 50, 50])      # Restored more reasonable thresholds
+            normal_brown_upper = np.array([30, 255, 180])   # Inclusive but not catching healthy tissue
             normal_brown_mask_1d = cv2.inRange(hsv_pixels, normal_brown_lower, normal_brown_upper)
             
-            # 4. Yellowish brown lesions (early browning)
-            yellowish_brown_lower = np.array([20, 50, 80])
-            yellowish_brown_upper = np.array([35, 200, 220])
+            # 5. Yellowish brown lesions (early browning) - MUCH MORE RESTRICTIVE FOR HEALTHY CORMS
+            yellowish_brown_lower = np.array([25, 80, 60])   # Higher thresholds to avoid healthy cream colors
+            yellowish_brown_upper = np.array([35, 200, 160]) # Narrower ranges to catch only actual lesions
             yellowish_brown_mask_1d = cv2.inRange(hsv_pixels, yellowish_brown_lower, yellowish_brown_upper)
             
             # Apply exclusions (same as in calculate_percent_browning)
@@ -861,18 +863,21 @@ def create_analysis_overlay(analysis_results):
             white_mask = (S < 30) & (V > 230)
             very_light_mask = (S < 20) & (V > 200)
             shadow_mask = (V < 15) & (S < 20)
-            healthy_corm_mask = (S < 40) & (V > 180) & (H < 30)
+            healthy_corm_mask = (S < 35) & (V > 170) & (H < 35)  # Balanced to identify healthy tissue
+
+            # Combine exclusions for different lesion types - VERY RESTRICTIVE FOR YELLOWISH
+            fusarium_exclusion = white_mask
+            dark_necrotic_exclusion = white_mask | very_light_mask  # Exclude very light areas from dark lesions
+            dark_brown_exclusion = white_mask | very_light_mask     # Exclude very light areas from dark brown
+            normal_brown_exclusion = white_mask | very_light_mask | healthy_corm_mask  # Restore healthy exclusion
+            yellowish_brown_exclusion = white_mask | very_light_mask | healthy_corm_mask | shadow_mask  # Very restrictive
             
             # Apply exclusions
-            fusarium_exclusion = white_mask | very_light_mask | healthy_corm_mask
-            dark_brown_exclusion = white_mask | very_light_mask | healthy_corm_mask
-            normal_brown_exclusion = white_mask | very_light_mask | shadow_mask | healthy_corm_mask
-            yellowish_brown_exclusion = white_mask | very_light_mask | shadow_mask | healthy_corm_mask
-            
-            fusarium_mask_1d = fusarium_mask_1d & ~fusarium_exclusion.astype(np.uint8) * 255
-            dark_brown_mask_1d = dark_brown_mask_1d & ~dark_brown_exclusion.astype(np.uint8) * 255
-            normal_brown_mask_1d = normal_brown_mask_1d & ~normal_brown_exclusion.astype(np.uint8) * 255
-            yellowish_brown_mask_1d = yellowish_brown_mask_1d & ~yellowish_brown_exclusion.astype(np.uint8) * 255
+            fusarium_mask_1d = fusarium_mask_1d & ~fusarium_exclusion
+            dark_necrotic_mask_1d = dark_necrotic_mask_1d & ~dark_necrotic_exclusion
+            dark_brown_mask_1d = dark_brown_mask_1d & ~dark_brown_exclusion
+            normal_brown_mask_1d = normal_brown_mask_1d & ~normal_brown_exclusion
+            yellowish_brown_mask_1d = yellowish_brown_mask_1d & ~yellowish_brown_exclusion
             
             # Convert 1D masks back to 2D coordinates
             analysis_coords = np.where(analysis_mask)
@@ -885,6 +890,13 @@ def create_analysis_overlay(analysis_results):
                     fusarium_coords_y = analysis_coords[0][fusarium_indices]
                     fusarium_coords_x = analysis_coords[1][fusarium_indices]
                     overlay[fusarium_coords_y, fusarium_coords_x] = [255, 0, 0]  # Bright red for fusarium
+
+                # Dark Necrotic lesions - Black
+                dark_necrotic_indices = np.where(dark_necrotic_mask_1d > 0)[0]
+                if len(dark_necrotic_indices) > 0:
+                    necrotic_coords_y = analysis_coords[0][dark_necrotic_indices]
+                    necrotic_coords_x = analysis_coords[1][dark_necrotic_indices]
+                    overlay[necrotic_coords_y, necrotic_coords_x] = [0, 0, 0] # Black
                 
                 # Dark brown lesions - Dark red
                 dark_brown_indices = np.where(dark_brown_mask_1d > 0)[0]
@@ -942,6 +954,8 @@ def create_export_data(analysis_results):
         # Add area measurements for each lesion type
         if 'fusarium_area_mm2' in breakdown:
             data.append(["Reddish Brown Area", f"{breakdown['fusarium_area_mm2']:.2f}", "mm²"])
+        if 'dark_necrotic_area_mm2' in breakdown:
+            data.append(["Dark Necrotic Area", f"{breakdown['dark_necrotic_area_mm2']:.2f}", "mm²"])
         if 'dark_brown_area_mm2' in breakdown:
             data.append(["Dark Brown Area", f"{breakdown['dark_brown_area_mm2']:.2f}", "mm²"])
         if 'normal_brown_area_mm2' in breakdown:
@@ -958,6 +972,7 @@ def create_export_data(analysis_results):
     # Add pixel counts (always included)
     data.extend([
         ["Reddish Brown Pixels", breakdown['fusarium'], "pixels"],
+        ["Dark Necrotic Pixels", breakdown['dark_necrotic'], "pixels"],
         ["Dark Brown Pixels", breakdown['dark_brown'], "pixels"],
         ["Normal Brown Pixels", breakdown['normal_brown'], "pixels"],
         ["Yellowish Brown Pixels", breakdown['yellowish_brown'], "pixels"],
@@ -986,6 +1001,7 @@ def create_batch_export():
         "Scale_mm_per_pixel", "Total_Area_mm2", "Total_Area_pixels",
         "Lesion_Area_mm2", "Lesion_Area_pixels",
         "Reddish_Brown_mm2", "Reddish_Brown_pixels",
+        "Dark_Necrotic_mm2", "Dark_Necrotic_pixels",
         "Dark_Brown_mm2", "Dark_Brown_pixels", 
         "Normal_Brown_mm2", "Normal_Brown_pixels",
         "Yellowish_Brown_mm2", "Yellowish_Brown_pixels",
@@ -1010,6 +1026,8 @@ def create_batch_export():
             breakdown['total_browning'],
             f"{breakdown.get('fusarium_area_mm2', 0):.2f}",
             breakdown['fusarium'],
+            f"{breakdown.get('dark_necrotic_area_mm2', 0):.2f}",
+            breakdown['dark_necrotic'],
             f"{breakdown.get('dark_brown_area_mm2', 0):.2f}",
             breakdown['dark_brown'],
             f"{breakdown.get('normal_brown_area_mm2', 0):.2f}",
@@ -1217,29 +1235,34 @@ def calculate_percent_browning(rgb_pixels):
     fusarium_red_upper = np.array([10, 255, 120])
     fusarium_purple_lower = np.array([140, 50, 20])  # Purple to magenta  
     fusarium_purple_upper = np.array([180, 255, 120])
+
+    # 2. Dark Necrotic/Black lesions (severe) - ULTRA INCLUSIVE
+    dark_necrotic_lower = np.array([0, 0, 0])
+    dark_necrotic_upper = np.array([180, 255, 80]) # Increased to 80 to catch more dark lesions
     
-    # 2. Dark brown lesions (severe browning) - moderately restrictive
-    dark_brown_lower = np.array([5, 80, 15])     # Moderate saturation, detect darker lesions
-    dark_brown_upper = np.array([20, 255, 110])  # Reasonable brightness range
+    # 3. Dark brown lesions (severe browning) - BALANCED
+    dark_brown_lower = np.array([0, 40, 30])     # More reasonable thresholds
+    dark_brown_upper = np.array([35, 255, 140])  # Still inclusive but not excessive
     
-    # 3. Normal brown lesions (moderate browning) - balanced detection
-    normal_brown_lower = np.array([8, 70, 60])   # Lower saturation threshold for actual brown lesions
-    normal_brown_upper = np.array([25, 255, 170]) # Broader range to catch lesions
+    # 4. Normal brown lesions (moderate browning) - BALANCED  
+    normal_brown_lower = np.array([8, 50, 50])   # Restored more reasonable thresholds
+    normal_brown_upper = np.array([30, 255, 180]) # Inclusive but not catching healthy tissue
     
-    # 4. Light brown lesions (mild browning) - DISABLED to avoid healthy corm confusion
+    # 5. Light brown lesions (mild browning) - DISABLED to avoid healthy corm confusion
     # Setting impossible range to effectively disable light brown detection
     light_brown_lower = np.array([0, 255, 255])  # Impossible values - effectively disabled
     light_brown_upper = np.array([0, 255, 255])  # This will detect nothing
     
-    # 5. Yellowish brown lesions (early browning) - more inclusive for actual lesions
-    yellowish_brown_lower = np.array([20, 50, 80])   # Lower saturation to catch more lesions
-    yellowish_brown_upper = np.array([35, 200, 220]) # Broader range for yellowish browning
+    # 6. Yellowish brown lesions (early browning) - MUCH MORE RESTRICTIVE FOR HEALTHY CORMS
+    yellowish_brown_lower = np.array([25, 80, 60])   # Higher thresholds to avoid healthy cream colors
+    yellowish_brown_upper = np.array([35, 200, 160]) # Narrower ranges to catch only actual lesions
     
     # Create masks for each lesion type
     fusarium_red_mask = cv2.inRange(hsv_pixels, fusarium_red_lower, fusarium_red_upper)
     fusarium_purple_mask = cv2.inRange(hsv_pixels, fusarium_purple_lower, fusarium_purple_upper)
     fusarium_mask = fusarium_red_mask | fusarium_purple_mask  # Combine red and purple fusarium lesions
     
+    dark_necrotic_mask = cv2.inRange(hsv_pixels, dark_necrotic_lower, dark_necrotic_upper)
     dark_brown_mask = cv2.inRange(hsv_pixels, dark_brown_lower, dark_brown_upper)
     normal_brown_mask = cv2.inRange(hsv_pixels, normal_brown_lower, normal_brown_upper)
     light_brown_mask = cv2.inRange(hsv_pixels, light_brown_lower, light_brown_upper)
@@ -1261,32 +1284,35 @@ def calculate_percent_browning(rgb_pixels):
     shadow_mask = (V < 15) & (S < 20)  # Only exclude very dark AND unsaturated pixels (true shadows)
     
     # Exclude healthy corm colors - be more specific about what constitutes healthy tissue
-    # Target the specific appearance of healthy white/cream corm tissue
-    healthy_corm_mask = (S < 40) & (V > 180) & (H < 30)  # Light, low-saturation, warm-toned areas
+    # Target the specific appearance of healthy white/cream corm tissue - BALANCED
+    healthy_corm_mask = (S < 35) & (V > 170) & (H < 35)  # Light, low-saturation, warm-toned healthy areas
     
     # Combine exclusions - removed grey_mask to allow more brown detection
     exclusion_mask = white_mask | very_light_mask | shadow_mask | healthy_corm_mask
     
     # Apply exclusion to lesion masks, but be selective for different lesion types
-    # Fusarium and dark brown lesions should be preserved even if they appear dark
+    # Dark lesions should be preserved even if they appear dark - only exclude white/light areas
     fusarium_exclusion = white_mask | very_light_mask | healthy_corm_mask  # NO shadow mask for fusarium
-    dark_brown_exclusion = white_mask | very_light_mask | healthy_corm_mask  # NO shadow mask for dark brown
-    normal_brown_exclusion = exclusion_mask
+    dark_necrotic_exclusion = white_mask | very_light_mask  # Exclude very light areas from dark lesions
+    dark_brown_exclusion = white_mask | very_light_mask     # Exclude very light areas from dark brown
+    normal_brown_exclusion = white_mask | very_light_mask | healthy_corm_mask  # Restore healthy exclusion
     light_brown_exclusion = exclusion_mask
-    yellowish_brown_exclusion = exclusion_mask
+    yellowish_brown_exclusion = white_mask | very_light_mask | healthy_corm_mask | shadow_mask  # Very restrictive
     
     # Apply different exclusions for each type
     fusarium_mask = fusarium_mask & ~fusarium_exclusion.astype(np.uint8) * 255
+    dark_necrotic_mask = dark_necrotic_mask & ~dark_necrotic_exclusion.astype(np.uint8) * 255  # Use specific necrotic exclusion
     dark_brown_mask = dark_brown_mask & ~dark_brown_exclusion.astype(np.uint8) * 255
     normal_brown_mask = normal_brown_mask & ~normal_brown_exclusion.astype(np.uint8) * 255
     light_brown_mask = light_brown_mask & ~light_brown_exclusion.astype(np.uint8) * 255
     yellowish_brown_mask = yellowish_brown_mask & ~yellowish_brown_exclusion.astype(np.uint8) * 255
     
-    # Combine all lesion types (after exclusion) - include fusarium lesions
-    combined_browning_mask = (fusarium_mask > 0) | (dark_brown_mask > 0) | (normal_brown_mask > 0) | (light_brown_mask > 0) | (yellowish_brown_mask > 0)
+    # Combine all lesion types (after exclusion) - include fusarium and necrotic lesions
+    combined_browning_mask = (fusarium_mask > 0) | (dark_necrotic_mask > 0) | (dark_brown_mask > 0) | (normal_brown_mask > 0) | (light_brown_mask > 0) | (yellowish_brown_mask > 0)
     
     # Calculate individual counts
     fusarium_pixels = np.sum(fusarium_mask > 0)
+    dark_necrotic_pixels = np.sum(dark_necrotic_mask > 0)
     dark_brown_pixels = np.sum(dark_brown_mask > 0)
     normal_brown_pixels = np.sum(normal_brown_mask > 0)
     light_brown_pixels = np.sum(light_brown_mask > 0)
@@ -1299,14 +1325,16 @@ def calculate_percent_browning(rgb_pixels):
     percent_browning = (total_browning_pixels / total_pixels) * 100
     
     # Calculate individual percentages
+    dark_necrotic_percent = (dark_necrotic_pixels / total_pixels) * 100
     dark_brown_percent = (dark_brown_pixels / total_pixels) * 100
     normal_brown_percent = (normal_brown_pixels / total_pixels) * 100
     light_brown_percent = (light_brown_pixels / total_pixels) * 100
     yellowish_brown_percent = (yellowish_brown_pixels / total_pixels) * 100
     
-    # Return comprehensive results including fusarium lesions
+    # Return comprehensive results including fusarium and necrotic lesions
     browning_breakdown = {
         'fusarium': fusarium_pixels,
+        'dark_necrotic': dark_necrotic_pixels,
         'dark_brown': dark_brown_pixels,
         'normal_brown': normal_brown_pixels, 
         'light_brown': light_brown_pixels,
@@ -1314,11 +1342,13 @@ def calculate_percent_browning(rgb_pixels):
         'total_browning': total_browning_pixels,
         'combined_mask': combined_browning_mask,
         'fusarium_mask': fusarium_mask > 0,
+        'dark_necrotic_mask': dark_necrotic_mask > 0,
         'dark_brown_mask': dark_brown_mask > 0,
         'normal_brown_mask': normal_brown_mask > 0,
         'light_brown_mask': light_brown_mask > 0,
         'yellowish_brown_mask': yellowish_brown_mask > 0,
         'fusarium_percent': fusarium_percent,
+        'dark_necrotic_percent': dark_necrotic_percent,
         'dark_brown_percent': dark_brown_percent,
         'normal_brown_percent': normal_brown_percent,
         'light_brown_percent': light_brown_percent,
@@ -1328,33 +1358,31 @@ def calculate_percent_browning(rgb_pixels):
     
     return percent_browning, total_browning_pixels, total_pixels, browning_breakdown
 
-def analyze_shape_region(image, shape_mask, ignore_black=True):
+def analyze_shape_region(image, shape_mask, ignore_blue=True):
     """
-    Analyze browning in the selected shape region, ignoring black background
+    Analyze browning in the selected shape region, ignoring the blue background
     """
     if shape_mask is None:
         st.warning("No shape selected. Please draw a rectangle or circle on the image.")
         return None
     
-    # Create mask for non-black pixels
-    if ignore_black:
-        # More robust black pixel detection using multiple criteria
-        black_threshold = 30  # RGB threshold
-        # Method 1: Check if any RGB channel is above threshold
-        non_black_mask_1 = np.any(image > black_threshold, axis=2)
-        # Method 2: Check if the sum of RGB values is above a threshold (brightness check)
-        brightness = np.sum(image, axis=2)
-        non_black_mask_2 = brightness > (black_threshold * 2)  # More lenient brightness check
-        # Combine both methods (pixel is non-black if either condition is true)
-        non_black_mask = non_black_mask_1 | non_black_mask_2
+    # Create mask for non-blue pixels
+    if ignore_blue:
+        # Convert to HSV for better blue detection
+        hsv_image = cv2.cvtColor(image, cv2.COLOR_RGB2HSV)
+        # Detect blue background pixels more robustly (includes slight variations)
+        blue_lower = np.array([100, 150, 200])  # Blue hue range with high saturation and brightness
+        blue_upper = np.array([130, 255, 255])
+        blue_mask = cv2.inRange(hsv_image, blue_lower, blue_upper)
+        non_blue_mask = blue_mask == 0  # Invert: True where NOT blue
     else:
-        non_black_mask = np.ones(image.shape[:2], dtype=bool)
+        non_blue_mask = np.ones(image.shape[:2], dtype=bool)
     
-    # Combine shape mask with non-black mask
-    analysis_mask = shape_mask & non_black_mask
+    # Combine shape mask with non-blue mask
+    analysis_mask = shape_mask & non_blue_mask
     
     if not np.any(analysis_mask):
-        st.warning("No valid pixels found in selected shape region.")
+        st.warning("No valid corm pixels found in the selected shape region (only background was selected).")
         return None
     
     # Extract pixels for analysis
@@ -1479,36 +1507,33 @@ def extract_selected_region(image, canvas_result, scale_factor):
     
     return drawn_mask, canvas_result.image_data
 
-def analyze_selected_region(image, selection_mask, ignore_black=True):
+def analyze_selected_region(image, selection_mask, ignore_blue=True):
     """
-    Analyze browning only in the selected region, ignoring black background
+    Analyze browning only in the selected region, ignoring blue background
     """
     if selection_mask is None:
         st.warning("No region selected. Please draw on the image to select the corm area.")
         return None
     
-    # Create mask for non-black pixels
-    if ignore_black:
-        # More robust black pixel detection using multiple criteria
-        black_threshold = 30  # RGB threshold
-        # Method 1: Check if any RGB channel is above threshold
-        non_black_mask_1 = np.any(image > black_threshold, axis=2)
-        # Method 2: Check if the sum of RGB values is above a threshold (brightness check)
-        brightness = np.sum(image, axis=2)
-        non_black_mask_2 = brightness > (black_threshold * 2)  # More lenient brightness check
-        # Combine both methods (pixel is non-black if either condition is true)
-        non_black_mask = non_black_mask_1 | non_black_mask_2
+    # Create mask for non-blue pixels
+    if ignore_blue:
+        # Specifically identify the blue background pixels
+        blue_bg_color = np.array([0, 0, 255])
+        # Create a mask where pixels are NOT the blue background color
+        non_blue_mask = ~np.all(image == blue_bg_color, axis=2)
     else:
-        non_black_mask = np.ones(image.shape[:2], dtype=bool)
+        non_blue_mask = np.ones(image.shape[:2], dtype=bool)
     
-    # Combine selection mask with non-black mask
-    analysis_mask = selection_mask & non_black_mask
+    # Combine selection mask with non-blue mask
+    analysis_mask = selection_mask & non_blue_mask
     
     if not np.any(analysis_mask):
-        st.warning("No valid pixels found in selected region.")
+        st.warning("No valid corm pixels found in the selected region (only background was selected).")
         return None
     
     # Extract pixels for analysis
+    selected_pixels = image[analysis_mask]
+    
     selected_pixels = image[analysis_mask]
     
     # Convert RGB to LAB
@@ -2184,7 +2209,7 @@ def main():
                                         analysis_results = analyze_shape_region(
                                             st.session_state.processed_image,
                                             selection_mask,
-                                            ignore_black=True
+                                            ignore_blue=True
                                         )
                                     if analysis_results is not None:
                                         st.success("✅ Analysis complete!")
@@ -2254,7 +2279,7 @@ def main():
                                     analysis_results = analyze_shape_region(
                                         st.session_state.processed_image,
                                         selection_mask,
-                                        ignore_black=True
+                                        ignore_blue=True
                                     )
                                     if analysis_results is not None:
                                         st.success("✅ Analysis complete!")
@@ -2283,7 +2308,7 @@ def main():
                                 analysis_results = analyze_shape_region(
                                     st.session_state.processed_image, 
                                     full_mask, 
-                                    ignore_black=True
+                                    ignore_blue=True
                                 )
                             if analysis_results is not None:
                                 st.success("✅ Full image analysis complete!")
@@ -2315,7 +2340,7 @@ def main():
                                     analysis_results = analyze_shape_region(
                                         st.session_state.processed_image, 
                                         drawn_mask, 
-                                        ignore_black=True
+                                        ignore_blue=True
                                     )
                                 if analysis_results is not None:
                                     st.success("✅ Analysis complete!")
