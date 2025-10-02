@@ -263,6 +263,10 @@ def create_selection_canvas(image, canvas_key="canvas"):
                 ["Rectangle", "Circle", "Polygon", "Freeform"],
                 help="Choose shape type for area selection"
             )
+            
+            # Polygon mode info
+            if shape_type == "Polygon":
+                st.info("💡 **Tip**: Click near your first point to automatically close the polygon")
             # If the user chose Polygon, offer a small input-mode chooser so they know
             # we can use either point-click polygon mode or a freehand draw (freedraw).
             polygon_input_mode = None
@@ -332,10 +336,10 @@ def create_selection_canvas(image, canvas_key="canvas"):
         if shape_type == "Polygon" and polygon_input_mode is not None and "Point mode" in polygon_input_mode:
             st.info("🔷 **Polygon Point Mode Instructions:**\n"
                    "1. **Left-click** points around your analysis area (minimum 3 points)\n" 
-                   "2. **Right-click** or **press ESC** to close the polygon (avoid double-click as it deletes points)\n"
+                   "2. **Click near your first point** to automatically close the polygon\n"
                    "3. The polygon will auto-close and analysis will start automatically\n"
                    "4. You'll see a red filled area when the polygon is complete")
-            st.warning("⚠️ **Important**: Double-clicking will DELETE the last point, not close the polygon. Use right-click or ESC instead!")
+            st.warning("⚠️ **Important**: Avoid double-clicking as it may delete the last point.")
         
         # Create canvas with cloud-optimized settings
         try:
@@ -351,10 +355,15 @@ def create_selection_canvas(image, canvas_key="canvas"):
                 key=canvas_key,
                 display_toolbar=False,  # Hide toolbar for cleaner interface
             )
+            
+
+                
         except Exception as canvas_error:
             st.error(f"Canvas initialization failed: {canvas_error}")
             st.warning("Falling back to alternative selection method...")
             return create_alternative_selection(image, canvas_key + "_fallback")
+        
+
         
         # Check for polygon completion and provide feedback
         if canvas_result is not None and shape_type == "Polygon":
@@ -516,6 +525,8 @@ def extract_shape_mask(canvas_result, scale_factor, shape_type, original_shape):
             # For polygons, try multiple detection methods
             polygon_detected = False
             
+
+            
             # Method 1: Alpha channel method (works for both point-mode and freehand polygons)
             if canvas_result.image_data is not None:
                 alpha_data = canvas_result.image_data[:, :, 3]
@@ -532,8 +543,11 @@ def extract_shape_mask(canvas_result, scale_factor, shape_type, original_shape):
                         ).astype(bool)
                     
                     area = np.sum(drawn_mask)
-                    st.info(f"✅ Polygon selected (alpha method) - Area: {area} pixels")
-                    return drawn_mask
+                    
+                    # Use normal validation
+                    if area > 10:  # Minimum area threshold
+                        st.info(f"✅ Polygon selected (alpha method) - Area: {area} pixels")
+                        return drawn_mask
             
             # Method 2: JSON parsing as fallback (for point-mode polygons)
             if "type" in shape_obj and shape_obj["type"] in ["polygon", "path"]:
@@ -546,6 +560,18 @@ def extract_shape_mask(canvas_result, scale_factor, shape_type, original_shape):
                     elif "points" in shape_obj:
                         # Direct points array
                         points = [(int(p["x"] / scale_factor), int(p["y"] / scale_factor)) for p in shape_obj["points"]]
+                    
+                    # Check for auto-close based on proximity to starting point
+                    auto_closed = False
+                    if len(points) >= 3:
+                        first_point = points[0]
+                        last_point = points[-1]
+                        distance = ((first_point[0] - last_point[0])**2 + (first_point[1] - last_point[1])**2)**0.5
+                        
+                        # If last point is within 25 pixels of first point, auto-close
+                        if distance <= 25:
+                            st.success("🎯 **Auto-closure detected!** You clicked near your starting point.")
+                            auto_closed = True
                     
                     if len(points) >= 3:
                         # Ensure polygon is closed by adding first point at end if needed
@@ -571,14 +597,19 @@ def extract_shape_mask(canvas_result, scale_factor, shape_type, original_shape):
                         mask = np.array(mask_img) > 0
                         
                         area = np.sum(mask)
-                        st.info(f"✅ Polygon selected (JSON method): {len(points)-1} points - Area: {area} pixels")
+                        
+                        # Provide feedback based on completion method
+                        if auto_closed:
+                            st.info(f"✅ Polygon auto-closed: {len(points)-1} points - Area: {area} pixels")
+                        else:
+                            st.info(f"✅ Polygon selected: {len(points)-1} points - Area: {area} pixels")
                         return mask
                         
                 except Exception as e:
                     st.warning(f"Could not extract polygon from JSON data: {e}")
             
             # If both methods failed, provide helpful guidance
-            st.warning("⚠️ Polygon not detected. For Point mode: Click at least 3 points, then double-click the last point or press ESC to close the polygon. For Freehand mode: Draw a closed shape.")
+            st.warning("⚠️ Polygon not detected. **To complete your polygon:** Click near your first point to auto-close (within 25 pixels). Avoid double-clicking as it may remove points.")
             return None
         
         elif shape_type == "Freeform":
@@ -1927,18 +1958,34 @@ def main():
                     if 'scale_canvas_clear_counter' not in st.session_state:
                         st.session_state.scale_canvas_clear_counter = 0
                     
-                    # Use EXACT same settings as working main canvas
+                    # Calculate proper aspect-ratio-preserving dimensions
+                    original_height, original_width = image_np.shape[:2]
+                    max_canvas_height = 400
+                    max_canvas_width = 600
+                    
+                    # Calculate scaling factor to fit within max dimensions while preserving aspect ratio
+                    scale_h = max_canvas_height / original_height
+                    scale_w = max_canvas_width / original_width
+                    scale_factor = min(scale_h, scale_w, 1.0)  # Don't upscale
+                    
+                    # Calculate final canvas dimensions
+                    canvas_height = int(original_height * scale_factor)
+                    canvas_width = int(original_width * scale_factor)
+                    
+                    # Resize canvas background to match canvas dimensions exactly
+                    canvas_background_resized = canvas_background.resize((canvas_width, canvas_height), Image.Resampling.LANCZOS)
+                    
                     scale_canvas = st_canvas(
-                        fill_color="rgba(255, 0, 0, 0.2)",  # Same as main canvas
-                        stroke_width=3,  # Same as main canvas
-                        stroke_color="#FF0000",  # Same as main canvas
-                        background_image=canvas_background,
+                        fill_color="rgba(255, 0, 0, 0.2)",
+                        stroke_width=3,
+                        stroke_color="#FF0000",
+                        background_image=canvas_background_resized,
                         update_streamlit=True,
-                        height=min(image_np.shape[0], 400),
-                        width=min(image_np.shape[1], 600),
+                        height=canvas_height,
+                        width=canvas_width,
                         drawing_mode="line",
                         key=f"scale_calibration_canvas_{st.session_state.scale_canvas_clear_counter}",
-                        display_toolbar=False,  # Same as main canvas
+                        display_toolbar=False,
                     )
                 except Exception as e:
                     st.error(f"Scale canvas error: {e}")
@@ -1978,9 +2025,13 @@ def main():
                             try:
                                 x1, y1 = float(obj.get("x1", 0)), float(obj.get("y1", 0))
                                 x2, y2 = float(obj.get("x2", 0)), float(obj.get("y2", 0))
-                                scale_px = np.sqrt((x2-x1)**2 + (y2-y1)**2)
+                                canvas_line_px = np.sqrt((x2-x1)**2 + (y2-y1)**2)
+                                
+                                # Convert canvas pixels back to original image pixels
+                                scale_px = canvas_line_px / scale_factor if 'scale_factor' in locals() else canvas_line_px
+                                
                                 if scale_px > 0:
-                                    st.success(f"✅ Line drawn: {scale_px:.1f} pixels")
+                                    st.success(f"✅ Line drawn: {canvas_line_px:.1f} canvas px = {scale_px:.1f} image px")
                                 else:
                                     scale_px = None
                             except Exception as e:
@@ -1990,8 +2041,8 @@ def main():
                 # Calculate and store scale
                 if scale_px and scale_length_mm > 0:
                     st.session_state.mm_per_px = scale_length_mm / scale_px
-                    st.success(f"� Scale set: {st.session_state.mm_per_px:.3f} mm/pixel")
-                    st.info(f"1 pixel = {st.session_state.mm_per_px:.3f} mm")
+                    st.success(f"📏 Scale set: {st.session_state.mm_per_px:.4f} mm/pixel")
+                    st.info(f"1 pixel = {st.session_state.mm_per_px:.4f} mm")
                 elif scale_px:
                     st.warning("⚠️ Please enter a valid measurement length")
                 else:
@@ -2122,9 +2173,10 @@ def main():
                                 if selection_mask is None or not np.any(selection_mask):
                                     st.warning("⚠️ No valid polygon selection found. **Instructions:**")
                                     st.markdown("""
-                                    - **Point mode**: Click at least 3 points on the image, then **double-click the last point** or **press ESC** to close the polygon
+                                    - **Point mode**: Click at least 3 points, then **click near your first point** to auto-close
                                     - **Freehand mode**: Draw a closed shape by dragging the mouse
-                                    - Make sure the polygon is **completely closed** before analyzing
+                                    - **Avoid double-clicking** (may remove the last point)
+                                    - **Auto-close threshold**: Click within 25 pixels of your starting point
                                     - **Try clicking the radio button above (Point mode ↔ Freehand)** to refresh canvas data
                                     """)
                                 else:
