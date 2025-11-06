@@ -1,136 +1,115 @@
-import streamlit as st
-import numpy as np
+"""
+Banana Corm Fusarium Wilt Analysis Tool
+Developed by the Plant Pathology Laboratory, Institute of Plant Breeding, UPLB
+Co-funded by the Gates Foundation
+
+This application analyzes banana corm images to detect and quantify fusarium wilt browning.
+"""
+
+# ==================== IMPORTS ====================
 import cv2
-from PIL import Image
-from datetime import datetime
-from colorspacious import cspace_convert
-from streamlit_drawable_canvas import st_canvas
-from rembg import remove
+import hashlib
 import io
 import json
-import hashlib
+import numpy as np
+import streamlit as st
+from colorspacious import cspace_convert
+from datetime import datetime
+from PIL import Image
+from rembg import remove
+from streamlit_drawable_canvas import st_canvas
 
-# --- Streamlit Cloud Optimizations ---
-MAX_IMAGE_DIM = 1200  # Limit max image dimension for upload
+# ==================== CONFIGURATION ====================
+MAX_IMAGE_DIM = 1200  # Maximum image dimension for cloud performance
 
-# Use Streamlit caching for heavy deterministic functions
+# ==================== UTILITY FUNCTIONS ====================
+
 def cache_resource(func):
-    # Use st.cache_resource if available, else fallback to st.cache_data
+    """Wrapper for Streamlit caching with version compatibility"""
     if hasattr(st, "cache_resource"):
         return st.cache_resource(show_spinner=False)(func)
     return st.cache_data(show_spinner=False)(func)
 
 def rerun_app():
-    """Compatible rerun function for different Streamlit versions"""
+    """Rerun Streamlit app with version compatibility"""
     if hasattr(st, "rerun"):
         st.rerun()
     elif hasattr(st, "experimental_rerun"):
         st.experimental_rerun()
     else:
-        # Fallback for very old versions
         raise RuntimeError("Streamlit rerun not available")
+
+# ==================== BACKGROUND REMOVAL ====================
 
 @cache_resource
 def remove_background_and_filter_colors(image):
     """
-    Remove background and keep only corm colors
-    Balanced approach - removes pot/soil while preserving corm tissue
-    Cloud-optimized with timeout and fallbacks
+    Remove background using AI and apply blue background for visualization.
+    Falls back to color-based approach if AI removal fails.
     """
-    # Convert PIL to numpy array
     img_array = np.array(image)
     
     try:
-        # Convert to bytes for rembg with timeout protection
+        # Prepare image for AI background removal
         img_bytes = io.BytesIO()
         image.save(img_bytes, format='PNG')
         img_bytes.seek(0)
         
-        # --- DIAGNOSTIC STEP: RETURN RAW REMBG OUTPUT ---
         # Remove background using AI
         no_bg = remove(img_bytes.getvalue())
         no_bg_image = Image.open(io.BytesIO(no_bg)).convert('RGBA')
         no_bg_array = np.array(no_bg_image)
         
-        # Create a new image with a blue background for visibility
-        # Create a blue background
+        # Create blue background for visibility
         blue_bg = np.array([0, 0, 255], dtype=np.uint8)
         background = np.full(img_array.shape, blue_bg)
-
-        # Get the alpha mask from the rembg output
-        alpha = no_bg_array[:, :, 3:4] / 255.0
         
-        # Blend the original image with the blue background
+        # Blend using alpha channel
+        alpha = no_bg_array[:, :, 3:4] / 255.0
         blended_array = (img_array * alpha + background * (1 - alpha)).astype(np.uint8)
         
         return blended_array
-        # --- END DIAGNOSTIC STEP ---
-
+        
     except Exception as e:
         st.warning(f"AI background removal failed: {e}. Using color-based approach.")
-        # Fallback to color-based segmentation
+        # Fallback to color-based method
         refined_mask = create_hybrid_mask(img_array)
         no_bg_array = np.concatenate([img_array, np.ones((*img_array.shape[:2], 1), dtype=np.uint8) * 255], axis=2)
-        # Apply the refined color filtering
         filtered_image = filter_corm_colors(no_bg_array[:, :, :3], refined_mask)
         return filtered_image
 
 def create_hybrid_mask(img_array):
-    """
-    Create a mask that includes corm tissue while excluding pot/soil
-    """
+    """Create mask to include corm tissue while excluding pot/soil"""
     hsv = cv2.cvtColor(img_array, cv2.COLOR_RGB2HSV)
     
-    # Include areas that are likely corm tissue
     include_mask = (
-        # Not too dark
-        (hsv[:, :, 2] > 40) &
-        # Not pure black
-        ~((hsv[:, :, 2] < 25) & (hsv[:, :, 1] < 30)) &
-        # Not extremely dark brown (pot material)
-        ~((hsv[:, :, 0] >= 5) & (hsv[:, :, 0] <= 25) & 
-          (hsv[:, :, 1] > 100) & (hsv[:, :, 2] < 50))
+        (hsv[:, :, 2] > 40) &  # Not too dark
+        ~((hsv[:, :, 2] < 25) & (hsv[:, :, 1] < 30)) &  # Not pure black
+        ~((hsv[:, :, 0] >= 5) & (hsv[:, :, 0] <= 25) & (hsv[:, :, 1] > 100) & (hsv[:, :, 2] < 50))  # Not dark brown pot
     )
-    
     return include_mask
 
 def refine_corm_mask(img_array, initial_mask):
-    """
-    Refine the mask to better distinguish corm tissue from pot/soil
-    """
+    """Refine mask to better distinguish corm tissue from pot/soil"""
     hsv = cv2.cvtColor(img_array, cv2.COLOR_RGB2HSV)
     
-    # Exclude very dark areas that are likely pot/soil - MATCHING FINAL FILTER
-    not_too_dark = hsv[:, :, 2] > 5 # Was 15
-    
-    # Exclude areas that are clearly pot material (very dark brown)
-    not_pot = ~((hsv[:, :, 0] >= 8) & (hsv[:, :, 0] <= 20) & 
-                (hsv[:, :, 1] > 120) & (hsv[:, :, 2] < 40)) # Relaxed value from 60
-    
-    # Combine with initial mask
+    not_too_dark = hsv[:, :, 2] > 5
+    not_pot = ~((hsv[:, :, 0] >= 8) & (hsv[:, :, 0] <= 20) & (hsv[:, :, 1] > 120) & (hsv[:, :, 2] < 40))
     refined = initial_mask & not_too_dark & not_pot
     
     return refined
 
 def create_simple_mask(rgb_image):
-    """
-    Create a simple mask to separate foreground from background
-    Based on the assumption that background is usually darker or very different from corm colors
-    """
-    # Convert to HSV
+    """Create simple foreground/background mask based on brightness"""
     hsv = cv2.cvtColor(rgb_image, cv2.COLOR_RGB2HSV)
     
-    # Create mask for likely background (very dark or very bright)
-    dark_mask = hsv[:, :, 2] < 30  # Very dark pixels
-    very_bright_mask = (hsv[:, :, 2] > 240) & (hsv[:, :, 1] < 30)  # Very bright, unsaturated
-    
-    # Background is likely dark or very bright unsaturated areas
+    # Background: very dark or very bright unsaturated areas
+    dark_mask = hsv[:, :, 2] < 30
+    very_bright_mask = (hsv[:, :, 2] > 240) & (hsv[:, :, 1] < 30)
     background_mask = dark_mask | very_bright_mask
-    
-    # Foreground is everything else
     foreground_mask = ~background_mask
     
-    # Apply morphological operations to clean up the mask
+    # Clean up with morphological operations
     kernel = np.ones((5, 5), np.uint8)
     foreground_mask = cv2.morphologyEx(foreground_mask.astype(np.uint8), cv2.MORPH_CLOSE, kernel)
     foreground_mask = cv2.morphologyEx(foreground_mask, cv2.MORPH_OPEN, kernel)
@@ -140,80 +119,61 @@ def create_simple_mask(rgb_image):
 @cache_resource
 def filter_corm_colors(rgb_image, mask):
     """
-    Filter image to keep only corm colors: green, white, yellow, brown
-    Balanced approach to preserve corm tissue while excluding pot/soil
+    Filter to keep only corm tissue colors while excluding pot/soil.
+    Preserves: white, yellow, green, brown tissue and lesions.
     """
-    # Convert to HSV for better color filtering
     hsv = cv2.cvtColor(rgb_image, cv2.COLOR_RGB2HSV)
     
-    # Primary corm tissue colors - more inclusive but targeted
+    # Corm tissue color ranges (HSV)
     corm_ranges = {
-        'white_tissue': [(0, 0, 140), (180, 45, 255)],     # White/cream corm tissue
-        'yellow_tissue': [(15, 30, 100), (45, 200, 255)],  # Yellow corm areas
-        'light_green': [(40, 20, 80), (80, 120, 220)],     # Light green corm tissue
-        'healthy_green': [(35, 40, 60), (75, 180, 200)],   # Healthy green areas
-        'light_brown': [(8, 25, 80), (25, 150, 200)],      # Light brown lesions
-        'medium_brown': [(5, 40, 50), (20, 180, 160)],     # Medium brown lesions
-        'dark_necrotic': [(0, 0, 10), (30, 255, 85)],      # ADDED: Dark brown/black lesions
-        'beige_tan': [(12, 15, 90), (30, 80, 220)]         # Beige/tan tissue
+        'white_tissue': [(0, 0, 140), (180, 45, 255)],
+        'yellow_tissue': [(15, 30, 100), (45, 200, 255)],
+        'light_green': [(40, 20, 80), (80, 120, 220)],
+        'healthy_green': [(35, 40, 60), (75, 180, 200)],
+        'light_brown': [(8, 25, 80), (25, 150, 200)],
+        'medium_brown': [(5, 40, 50), (20, 180, 160)],
+        'dark_necrotic': [(0, 0, 10), (30, 255, 85)],
+        'beige_tan': [(12, 15, 90), (30, 80, 220)]
     }
     
-    # Create mask for corm colors
+    # Create combined color mask
     corm_mask = np.zeros(hsv.shape[:2], dtype=bool)
     for color_name, (lower, upper) in corm_ranges.items():
-        lower = np.array(lower)
-        upper = np.array(upper)
-        color_mask = cv2.inRange(hsv, lower, upper)
+        color_mask = cv2.inRange(hsv, np.array(lower), np.array(upper))
         corm_mask |= (color_mask > 0)
     
-    # Exclude very dark areas (pot, soil, deep shadows) - FINAL ADJUSTMENT
-    brightness_threshold = hsv[:, :, 2] > 5  # Exclude only the absolute darkest pixels (was 15)
-    
-    # Exclude extremely saturated colors (not natural tissue)
-    saturation_filter = hsv[:, :, 1] < 220  # Allow most natural colors
-    
-    # Exclude pure black and very dark brown (pot/soil) - RELAXED
-    not_black = ~((hsv[:, :, 2] < 5) & (hsv[:, :, 1] < 50)) # Was value < 10
-    
-    # Specific exclusions for pot materials
-    exclude_dark_brown = ~cv2.inRange(hsv, np.array([5, 80, 10]), np.array([25, 255, 40])) # Relaxed value from 60
-    exclude_pure_black = ~cv2.inRange(hsv, np.array([0, 0, 0]), np.array([180, 255, 5])) # Relaxed value from 10
+    # Apply filters to exclude pot/soil
+    brightness_filter = hsv[:, :, 2] > 5
+    saturation_filter = hsv[:, :, 1] < 220
+    not_black = ~((hsv[:, :, 2] < 5) & (hsv[:, :, 1] < 50))
+    exclude_dark_brown = ~cv2.inRange(hsv, np.array([5, 80, 10]), np.array([25, 255, 40]))
+    exclude_pure_black = ~cv2.inRange(hsv, np.array([0, 0, 0]), np.array([180, 255, 5]))
     
     # Combine all filters
-    final_mask = (corm_mask & 
-                  brightness_threshold & 
-                  saturation_filter & 
-                  not_black & 
-                  exclude_dark_brown.astype(bool) & 
-                  exclude_pure_black.astype(bool) & 
-                  mask)
+    final_mask = (corm_mask & brightness_filter & saturation_filter & not_black & 
+                  exclude_dark_brown.astype(bool) & exclude_pure_black.astype(bool) & mask)
     
-    # Apply morphological operations to clean up
-    kernel = np.ones((2, 2), np.uint8)
-    final_mask = cv2.morphologyEx(final_mask.astype(np.uint8), cv2.MORPH_OPEN, kernel)
-    kernel = np.ones((3, 3), np.uint8)
-    final_mask = cv2.morphologyEx(final_mask.astype(np.uint8), cv2.MORPH_CLOSE, kernel)
+    # Morphological cleanup
+    kernel_small = np.ones((2, 2), np.uint8)
+    kernel_large = np.ones((3, 3), np.uint8)
+    final_mask = cv2.morphologyEx(final_mask.astype(np.uint8), cv2.MORPH_OPEN, kernel_small)
+    final_mask = cv2.morphologyEx(final_mask.astype(np.uint8), cv2.MORPH_CLOSE, kernel_large)
     final_mask = final_mask.astype(bool)
     
-    # Create output image
+    # Apply mask to image
     result = np.zeros_like(rgb_image)
     result[final_mask] = rgb_image[final_mask]
-    
     return result
 
+
+# ==================== CANVAS & SELECTION ====================
+
 def create_selection_canvas(image, canvas_key="canvas"):
-    """
-    Create an interactive canvas for selecting corm area using shapes with editing capabilities
-    """
+    """Create interactive canvas for selecting corm area with shape tools"""
     try:
-        # Convert numpy array to PIL Image for canvas
+        # Convert to PIL Image if numpy array
         if isinstance(image, np.ndarray):
-            # Ensure image has proper shape and values
-            if len(image.shape) == 3 and image.shape[2] == 3:
-                # RGB image
-                canvas_image = Image.fromarray(image.astype('uint8'))
-            elif len(image.shape) == 3 and image.shape[2] == 4:
-                # RGBA image
+            if len(image.shape) == 3 and image.shape[2] in [3, 4]:
                 canvas_image = Image.fromarray(image.astype('uint8'))
             else:
                 st.error(f"Unexpected image shape: {image.shape}")
@@ -221,16 +181,14 @@ def create_selection_canvas(image, canvas_key="canvas"):
         else:
             canvas_image = image
         
-        # Validate canvas_image
         if canvas_image is None:
             st.error("Canvas image is None")
             return None, None, None
         
-        # Get image dimensions
         img_width, img_height = canvas_image.size
         
-        # Scale down for canvas if too large - more aggressive for cloud stability
-        max_canvas_size = 400  # Reduced from 600 for better cloud performance
+        # Scale down for canvas if too large (cloud optimization)
+        max_canvas_size = 400
         if max(img_width, img_height) > max_canvas_size:
             scale_factor = max_canvas_size / max(img_width, img_height)
             canvas_width = int(img_width * scale_factor)
@@ -240,7 +198,7 @@ def create_selection_canvas(image, canvas_key="canvas"):
             canvas_width, canvas_height = img_width, img_height
             scale_factor = 1.0
         
-        # Ensure minimum canvas size for usability
+        # Ensure minimum usable size
         min_size = 200
         if canvas_width < min_size or canvas_height < min_size:
             scale = min_size / min(canvas_width, canvas_height)
@@ -248,7 +206,7 @@ def create_selection_canvas(image, canvas_key="canvas"):
             canvas_height = int(canvas_height * scale)
             canvas_image = canvas_image.resize((canvas_width, canvas_height), Image.Resampling.LANCZOS)
         
-        # Streamlined selection tools
+        # Selection tools UI
         col1, col2, col3 = st.columns([2, 2, 1])
         
         with col1:
@@ -258,14 +216,10 @@ def create_selection_canvas(image, canvas_key="canvas"):
                 help="Choose shape type for area selection"
             )
             
-            # Polygon mode info
-            if shape_type == "Polygon":
-                st.info("💡 **Tip**: Click near your first point to automatically close the polygon")
-            # If the user chose Polygon, offer a small input-mode chooser so they know
-            # we can use either point-click polygon mode or a freehand draw (freedraw).
+            # Polygon input mode
             polygon_input_mode = None
             if shape_type == "Polygon":
-                # Set a default in session state so the radio is always initialized
+                st.info("💡 Click near your first point to auto-close the polygon")
                 radio_key = f"{canvas_key}_polygon_input_mode"
                 if radio_key not in st.session_state:
                     st.session_state[radio_key] = "Point mode (click to add points)"
@@ -274,7 +228,7 @@ def create_selection_canvas(image, canvas_key="canvas"):
                     ["Point mode (click to add points)", "Freehand (drag to draw)"],
                     index=0,
                     key=radio_key,
-                    help="Point mode: Click multiple points to create polygon vertices, then close the shape. Freehand: Draw continuously by dragging."
+                    help="Point mode: Click points to create vertices. Freehand: Draw continuously."
                 )
         
         with col2:
@@ -291,11 +245,10 @@ def create_selection_canvas(image, canvas_key="canvas"):
                 st.session_state.canvas_clear_counter += 1
                 canvas_key = f"{canvas_key}_{st.session_state.canvas_clear_counter}"
         
-        # Set drawing mode based on selection
+        # Map shape and mode to drawing mode
         mode_map = {
             ("Rectangle", "Draw New"): "rect",
-            ("Circle", "Draw New"): "circle", 
-            # Polygon defaults to point-click polygon mode; user can choose Freehand via the radio.
+            ("Circle", "Draw New"): "circle",
             ("Polygon", "Draw New"): "polygon",
             ("Freeform", "Draw New"): "freedraw",
             ("Rectangle", "Edit/Transform"): "transform",
@@ -305,41 +258,32 @@ def create_selection_canvas(image, canvas_key="canvas"):
         }
         
         drawing_mode = mode_map.get((shape_type, canvas_mode), "rect")
-
-        # If the user selected Polygon, respect their polygon_input_mode choice
-        if shape_type == "Polygon" and canvas_mode == "Draw New":
-            if polygon_input_mode is not None:
-                # If user chose Point mode, use polygon; if they chose Freehand, use freedraw
-                if "Point mode" in polygon_input_mode:
-                    drawing_mode = "polygon"
-                elif "Freehand" in polygon_input_mode:
-                    drawing_mode = "freedraw"
-                # else fall back to mode_map default (polygon)
         
-        # Simple instructions
+        # Override for polygon freehand mode
+        if shape_type == "Polygon" and canvas_mode == "Draw New" and polygon_input_mode:
+            if "Freehand" in polygon_input_mode:
+                drawing_mode = "freedraw"
+        
+        # User instructions
         instruction_map = {
             "rect": "📦 Click and drag to draw rectangle",
-            "circle": "⭕ Click and drag to draw circle", 
-            "polygon": "🔷 Click points to create polygon vertices. Right-click or press ESC to close the polygon",
-            "freedraw": "🖊️ Draw any shape by dragging your mouse",
+            "circle": "⭕ Click and drag to draw circle",
+            "polygon": "🔷 Click points to create polygon. Click near first point to close",
+            "freedraw": "🖊️ Draw any shape by dragging",
             "transform": "✏️ Click and drag shapes to resize/move"
         }
         
         st.info(instruction_map.get(drawing_mode, "Select area for analysis"))
-        # Extra clarification for polygon point mode (users often click and see dots)
-        if shape_type == "Polygon" and polygon_input_mode is not None and "Point mode" in polygon_input_mode:
-            st.info("🔷 **Polygon Point Mode Instructions:**\n"
-                   "1. **Left-click** points around your analysis area (minimum 3 points)\n" 
-                   "2. **Click near your first point** to automatically close the polygon\n"
-                   "3. The polygon will auto-close and analysis will start automatically\n"
-                   "4. You'll see a red filled area when the polygon is complete")
-            st.warning("⚠️ **Important**: Avoid double-clicking as it may delete the last point.")
         
-        # Create canvas with cloud-optimized settings
+        if shape_type == "Polygon" and polygon_input_mode and "Point mode" in polygon_input_mode:
+            st.info("🔷 **Polygon Instructions:** Click points (min 3), then click near first point to auto-close")
+            st.warning("⚠️ Avoid double-clicking")
+        
+        # Create canvas
         try:
             canvas_result = st_canvas(
                 fill_color="rgba(255, 0, 0, 0.2)",
-                stroke_width=3,  # Thicker stroke for better visibility
+                stroke_width=3,
                 stroke_color="#FF0000",
                 background_image=canvas_image,
                 update_streamlit=True,
@@ -347,49 +291,38 @@ def create_selection_canvas(image, canvas_key="canvas"):
                 width=canvas_width,
                 drawing_mode=drawing_mode,
                 key=canvas_key,
-                display_toolbar=False,  # Hide toolbar for cleaner interface
+                display_toolbar=False,
             )
-            
-
-                
         except Exception as canvas_error:
             st.error(f"Canvas initialization failed: {canvas_error}")
-            st.warning("Falling back to alternative selection method...")
             return create_alternative_selection(image, canvas_key + "_fallback")
         
-
-        
-        # Check for polygon completion and provide feedback
-        if canvas_result is not None and shape_type == "Polygon":
-            # Check if we have a completed polygon
+        # Polygon completion feedback
+        if canvas_result and shape_type == "Polygon":
             polygon_completed = False
             point_count = 0
             
-            if canvas_result.json_data and len(canvas_result.json_data.get("objects", [])) > 0:
+            if canvas_result.json_data and canvas_result.json_data.get("objects"):
                 for obj in canvas_result.json_data["objects"]:
                     if obj.get("type") in ["polygon", "path"]:
-                        # Check if polygon has enough points and is closed
                         if "points" in obj:
                             point_count = len(obj["points"])
                             polygon_completed = point_count >= 3
                         elif "path" in obj and obj["path"]:
-                            # Path-based polygon is usually completed
                             polygon_completed = True
                             try:
                                 point_count = len(parse_svg_path(obj["path"], scale_factor))
-                            except Exception:
+                            except:
                                 point_count = 0
             
-            # Provide real-time feedback
             if point_count > 0:
                 if polygon_completed:
-                    st.success(f"✅ Polygon completed with {point_count} points! Ready for analysis.")
-                    # Add a session state flag for auto-analysis
+                    st.success(f"✅ Polygon completed with {point_count} points!")
                     if f"{canvas_key}_polygon_completed" not in st.session_state:
                         st.session_state[f"{canvas_key}_polygon_completed"] = True
-                        rerun_app()  # Trigger rerun to show analysis button
+                        rerun_app()
                 else:
-                    st.info(f"🔷 Polygon in progress: {point_count} points. Need at least 3 points. Right-click or press ESC to complete.")
+                    st.info(f"🔷 {point_count} points. Need min 3. Right-click or ESC to complete.")
         
         return canvas_result, scale_factor, shape_type
         
@@ -398,9 +331,7 @@ def create_selection_canvas(image, canvas_key="canvas"):
         return create_alternative_selection(image, canvas_key + "_fallback")
 
 def create_alternative_selection(image, canvas_key="alt_canvas"):
-    """
-    Alternative selection method using coordinate inputs
-    """
+    """Alternative selection method using coordinate inputs (fallback)"""
     st.subheader("Alternative Selection Method")
     st.info("Draw a rectangular region by specifying coordinates")
     
@@ -412,27 +343,22 @@ def create_alternative_selection(image, canvas_key="alt_canvas"):
         width, height = image.size
         display_image = image
     
-    # Display image with coordinates
     st.image(display_image, caption=f"Image size: {width} x {height} pixels", width=400)
     
-    # Input coordinates
+    # Coordinate inputs
     col1, col2 = st.columns(2)
     with col1:
         x1 = st.number_input("X1 (left)", min_value=0, max_value=width-1, value=0, key=f"{canvas_key}_x1")
         y1 = st.number_input("Y1 (top)", min_value=0, max_value=height-1, value=0, key=f"{canvas_key}_y1")
-    
     with col2:
         x2 = st.number_input("X2 (right)", min_value=0, max_value=width-1, value=width//2, key=f"{canvas_key}_x2")
         y2 = st.number_input("Y2 (bottom)", min_value=0, max_value=height-1, value=height//2, key=f"{canvas_key}_y2")
     
-    # Create a fake canvas result with rectangular selection
+    # Create fake canvas result
     class AlternativeCanvasResult:
         def __init__(self, x1, y1, x2, y2, width, height):
-            # Create a simple rectangular mask
             mask = np.zeros((height, width), dtype=np.uint8)
             mask[int(y1):int(y2), int(x1):int(x2)] = 255
-            
-            # Create image_data in the format expected by the rest of the code
             self.image_data = np.zeros((height, width, 4), dtype=np.uint8)
             self.image_data[:, :, 3] = mask  # Alpha channel
             
@@ -666,11 +592,11 @@ def extract_shape_mask(canvas_result, scale_factor, shape_type, original_shape):
     # No valid selection found
     return None
 
+# ==================== RESULTS DISPLAY & EXPORT ====================
+
 def display_analysis_results(analysis_results, context="main"):
-    """
-    Display analysis results in a clean, organized format
-    """
-    # Key metrics at the top
+    """Display analysis results in clean, organized format"""
+    # Key metrics
     col1, col2, col3 = st.columns(3)
     
     # Get scale info and areas
@@ -821,6 +747,10 @@ def create_analysis_overlay(analysis_results):
             # Get pixels in the analyzed region
             selected_pixels = st.session_state.processed_image[analysis_mask]
             
+            # Ensure selected_pixels has the correct shape (N, 3)
+            if selected_pixels.ndim == 1:
+                selected_pixels = selected_pixels.reshape(-1, 3)
+            
             # Re-run lesion detection to get proper masks
             hsv_pixels = cv2.cvtColor(selected_pixels.reshape(-1, 1, 3), cv2.COLOR_RGB2HSV)
             
@@ -928,6 +858,28 @@ def create_analysis_overlay(analysis_results):
         st.error(f"Visualization error: {e}")
         return None
 
+def calculate_rating(browning_percentage):
+    """Calculate rating based on total browning percentage
+    Rating scale:
+    1: 1-19%
+    2: 20-39%
+    3: 40-59%
+    4: 60-79%
+    5: 80-100%
+    """
+    if browning_percentage < 1:
+        return 0  # No browning
+    elif browning_percentage < 20:
+        return 1
+    elif browning_percentage < 40:
+        return 2
+    elif browning_percentage < 60:
+        return 3
+    elif browning_percentage < 80:
+        return 4
+    else:
+        return 5
+
 def create_export_data(analysis_results):
     """Create CSV export data with browning analysis results and scaled measurements"""
     
@@ -936,10 +888,15 @@ def create_export_data(analysis_results):
     scale_info = analysis_results.get('scale_info', {})
     has_scale = scale_info.get('has_scale', False)
     
+    # Calculate rating based on browning percentage
+    browning_pct = analysis_results['percent_browning']
+    rating = calculate_rating(browning_pct)
+    
     data = [
         ["Metric", "Value", "Unit"],
         ["Analysis Date", datetime.now().strftime("%Y-%m-%d %H:%M:%S"), ""],
-        ["Total Browning Percentage", f"{analysis_results['percent_browning']:.2f}", "%"],
+        ["Total Browning Percentage", f"{browning_pct:.2f}", "%"],
+        ["Rating", rating, "(1-19%=1, 20-39%=2, 40-59%=3, 60-79%=4, 80-100%=5)"],
     ]
     
     # Add scale information
@@ -951,16 +908,16 @@ def create_export_data(analysis_results):
             ["Total Lesion Area", f"{analysis_results.get('browning_area_mm2', 0):.2f}", "mm²"],
         ])
         
-        # Add area measurements for each lesion type
-        if 'fusarium_area_mm2' in breakdown:
+        # Add area measurements for each lesion type (with None check)
+        if 'fusarium_area_mm2' in breakdown and breakdown['fusarium_area_mm2'] is not None:
             data.append(["Reddish Brown Area", f"{breakdown['fusarium_area_mm2']:.2f}", "mm²"])
-        if 'dark_necrotic_area_mm2' in breakdown:
+        if 'dark_necrotic_area_mm2' in breakdown and breakdown['dark_necrotic_area_mm2'] is not None:
             data.append(["Dark Necrotic Area", f"{breakdown['dark_necrotic_area_mm2']:.2f}", "mm²"])
-        if 'dark_brown_area_mm2' in breakdown:
+        if 'dark_brown_area_mm2' in breakdown and breakdown['dark_brown_area_mm2'] is not None:
             data.append(["Dark Brown Area", f"{breakdown['dark_brown_area_mm2']:.2f}", "mm²"])
-        if 'normal_brown_area_mm2' in breakdown:
+        if 'normal_brown_area_mm2' in breakdown and breakdown['normal_brown_area_mm2'] is not None:
             data.append(["Normal Brown Area", f"{breakdown['normal_brown_area_mm2']:.2f}", "mm²"])
-        if 'yellowish_brown_area_mm2' in breakdown:
+        if 'yellowish_brown_area_mm2' in breakdown and breakdown['yellowish_brown_area_mm2'] is not None:
             data.append(["Yellowish Brown Area", f"{breakdown['yellowish_brown_area_mm2']:.2f}", "mm²"])
     else:
         data.extend([
@@ -975,8 +932,6 @@ def create_export_data(analysis_results):
         ["Dark Necrotic Pixels", breakdown['dark_necrotic'], "pixels"],
         ["Dark Brown Pixels", breakdown['dark_brown'], "pixels"],
         ["Normal Brown Pixels", breakdown['normal_brown'], "pixels"],
-        ["Yellowish Brown Pixels", breakdown['yellowish_brown'], "pixels"],
-        ["Light Brown Pixels", breakdown['light_brown'], "pixels"],
     ])
     
 
@@ -997,15 +952,14 @@ def create_batch_export():
     
     # Write header
     header = [
-        "Image_Name", "Analysis_Date", "Total_Browning_%", 
+        "Image_Name", "Analysis_Date", "Total_Browning_%", "Rating",
         "Scale_mm_per_pixel", "Total_Area_mm2", "Total_Area_pixels",
         "Lesion_Area_mm2", "Lesion_Area_pixels",
         "Reddish_Brown_mm2", "Reddish_Brown_pixels",
         "Dark_Necrotic_mm2", "Dark_Necrotic_pixels",
         "Dark_Brown_mm2", "Dark_Brown_pixels", 
         "Normal_Brown_mm2", "Normal_Brown_pixels",
-        "Yellowish_Brown_mm2", "Yellowish_Brown_pixels",
-        "Light_Brown_mm2", "Light_Brown_pixels"
+        "Yellowish_Brown_mm2", "Yellowish_Brown_pixels"
     ]
     output.write(",".join(header) + "\n")
     
@@ -1015,27 +969,34 @@ def create_batch_export():
         breakdown = analysis['browning_breakdown']
         scale_info = analysis.get('scale_info', {})
         
+        # Calculate rating
+        browning_pct = analysis['percent_browning']
+        rating = calculate_rating(browning_pct)
+        
+        # Helper function to safely format float values (handle None)
+        def safe_format(value, default=0):
+            return f"{value:.2f}" if value is not None else f"{default:.2f}"
+        
         row = [
             result['image_name'],
             result['timestamp'],
-            f"{analysis['percent_browning']:.2f}",
+            f"{browning_pct:.2f}",
+            rating,
             f"{scale_info.get('mm_per_px', 0):.4f}",
-            f"{analysis.get('total_area_mm2', 0):.2f}",
+            safe_format(analysis.get('total_area_mm2')),
             analysis['total_corm_pixels'],
-            f"{analysis.get('browning_area_mm2', 0):.2f}",
+            safe_format(analysis.get('browning_area_mm2')),
             breakdown['total_browning'],
-            f"{breakdown.get('fusarium_area_mm2', 0):.2f}",
+            safe_format(breakdown.get('fusarium_area_mm2')),
             breakdown['fusarium'],
-            f"{breakdown.get('dark_necrotic_area_mm2', 0):.2f}",
+            safe_format(breakdown.get('dark_necrotic_area_mm2')),
             breakdown['dark_necrotic'],
-            f"{breakdown.get('dark_brown_area_mm2', 0):.2f}",
+            safe_format(breakdown.get('dark_brown_area_mm2')),
             breakdown['dark_brown'],
-            f"{breakdown.get('normal_brown_area_mm2', 0):.2f}",
+            safe_format(breakdown.get('normal_brown_area_mm2')),
             breakdown['normal_brown'],
-            f"{breakdown.get('yellowish_brown_area_mm2', 0):.2f}",
-            breakdown['yellowish_brown'],
-            f"{breakdown.get('light_brown_area_mm2', 0):.2f}",
-            breakdown['light_brown']
+            safe_format(breakdown.get('yellowish_brown_area_mm2')),
+            breakdown['yellowish_brown']
         ]
         output.write(",".join(map(str, row)) + "\n")
     
@@ -1070,8 +1031,10 @@ def add_to_batch_results(analysis_results, image_name):
         # Auto-save batch data after adding new result
         save_batch_data()
 
+# ==================== BATCH DATA PERSISTENCE ====================
+
 def save_batch_data():
-    """Save batch results to persistent storage (JSON file)"""
+    """Save batch results to persistent storage"""
     try:
         if hasattr(st.session_state, 'batch_results') and st.session_state.batch_results:
             # Create a data directory if it doesn't exist
@@ -1216,46 +1179,49 @@ def fill_enclosed_area(line_mask):
         st.warning(f"Could not fill enclosed area: {e}. Using drawn line only.")
         return line_mask
 
+# ==================== BROWNING ANALYSIS ====================
+
 def calculate_percent_browning(rgb_pixels):
     """
-    Calculate percent browning based on multiple brown lesion types:
-    - Dark brown lesions (severe browning)
-    - Normal brown lesions (moderate browning) 
-    - Light brown lesions (mild browning)
-    - Yellowish brown lesions (early browning)
+    Calculate browning percentage based on multiple lesion types:
+    Fusarium, dark necrotic, dark brown, normal brown, and yellowish brown.
+    Light brown detection is disabled to avoid false positives.
     """
-    # Convert to HSV for better color classification
+    # Ensure correct shape
+    if rgb_pixels.ndim == 1:
+        rgb_pixels = rgb_pixels.reshape(-1, 3)
+    elif rgb_pixels.shape[-1] != 3:
+        raise ValueError(f"Invalid pixel data shape: {rgb_pixels.shape}. Expected shape (N, 3).")
+    
+    # Convert to HSV
     hsv_pixels = cv2.cvtColor(rgb_pixels.reshape(-1, 1, 3), cv2.COLOR_RGB2HSV)
     
-    # Define color ranges for different lesion types in HSV
-    # Enhanced to detect fusarium-specific colors (red/purple) and browning
-    
-    # 1. Fusarium lesions (reddish/purplish) - characteristic of fusarium wilt
-    fusarium_red_lower = np.array([0, 60, 20])    # Deep red to red
+    # Define lesion color ranges (HSV)
+    # Fusarium lesions (reddish/purplish)
+    fusarium_red_lower = np.array([0, 60, 20])
     fusarium_red_upper = np.array([10, 255, 120])
-    fusarium_purple_lower = np.array([140, 50, 20])  # Purple to magenta  
+    fusarium_purple_lower = np.array([140, 50, 20])
     fusarium_purple_upper = np.array([180, 255, 120])
-
-    # 2. Dark Necrotic/Black lesions (severe) - ULTRA INCLUSIVE
+    
+    # Dark necrotic/black lesions (severe)
     dark_necrotic_lower = np.array([0, 0, 0])
-    dark_necrotic_upper = np.array([180, 255, 80]) # Increased to 80 to catch more dark lesions
+    dark_necrotic_upper = np.array([180, 255, 80])
     
-    # 3. Dark brown lesions (severe browning) - BALANCED
-    dark_brown_lower = np.array([0, 40, 30])     # More reasonable thresholds
-    dark_brown_upper = np.array([35, 255, 140])  # Still inclusive but not excessive
+    # Dark brown lesions (severe browning)
+    dark_brown_lower = np.array([0, 40, 30])
+    dark_brown_upper = np.array([35, 255, 140])
     
-    # 4. Normal brown lesions (moderate browning) - BALANCED  
-    normal_brown_lower = np.array([8, 50, 50])   # Restored more reasonable thresholds
-    normal_brown_upper = np.array([30, 255, 180]) # Inclusive but not catching healthy tissue
+    # Normal brown lesions (moderate browning)
+    normal_brown_lower = np.array([8, 50, 50])
+    normal_brown_upper = np.array([30, 255, 180])
     
-    # 5. Light brown lesions (mild browning) - DISABLED to avoid healthy corm confusion
-    # Setting impossible range to effectively disable light brown detection
-    light_brown_lower = np.array([0, 255, 255])  # Impossible values - effectively disabled
-    light_brown_upper = np.array([0, 255, 255])  # This will detect nothing
+    # Light brown (DISABLED to avoid false positives)
+    light_brown_lower = np.array([0, 255, 255])
+    light_brown_upper = np.array([0, 255, 255])
     
-    # 6. Yellowish brown lesions (early browning) - MUCH MORE RESTRICTIVE FOR HEALTHY CORMS
-    yellowish_brown_lower = np.array([25, 80, 60])   # Higher thresholds to avoid healthy cream colors
-    yellowish_brown_upper = np.array([35, 200, 160]) # Narrower ranges to catch only actual lesions
+    # Yellowish brown (early browning)
+    yellowish_brown_lower = np.array([25, 80, 60])
+    yellowish_brown_upper = np.array([35, 200, 160])
     
     # Create masks for each lesion type
     fusarium_red_mask = cv2.inRange(hsv_pixels, fusarium_red_lower, fusarium_red_upper)
@@ -1362,6 +1328,11 @@ def analyze_shape_region(image, shape_mask, ignore_blue=True):
     """
     Analyze browning in the selected shape region, ignoring the blue background
     """
+    # Validate image shape
+    if image is None or image.ndim != 3 or image.shape[2] != 3:
+        st.error(f"Invalid image format. Expected RGB image with shape (H, W, 3), got {image.shape if image is not None else 'None'}")
+        return None
+        
     if shape_mask is None:
         st.warning("No shape selected. Please draw a rectangle or circle on the image.")
         return None
@@ -1388,10 +1359,18 @@ def analyze_shape_region(image, shape_mask, ignore_blue=True):
     # Extract pixels for analysis
     selected_pixels = image[analysis_mask]
     
+    # Ensure selected_pixels has the correct shape (N, 3)
+    if selected_pixels.ndim == 1:
+        # If somehow flattened, reshape to (N, 3)
+        selected_pixels = selected_pixels.reshape(-1, 3)
+    elif selected_pixels.shape[-1] != 3:
+        st.error(f"Invalid pixel data shape: {selected_pixels.shape}. Expected shape (N, 3).")
+        return None
+    
     # Calculate percent browning (multiple brown lesion types)
     percent_browning, browning_pixels, total_corm_pixels, browning_breakdown = calculate_percent_browning(selected_pixels)
     
-    # Convert RGB to LAB
+    # Convert RGB to LAB - selected_pixels is already (N, 3), reshape to (N, 1, 3) for colorspacious
     lab_pixels = rgb_to_lab(selected_pixels.reshape(-1, 1, 3)).reshape(-1, 3)
     L = lab_pixels[:, 0]
     a = lab_pixels[:, 1]
@@ -1511,6 +1490,11 @@ def analyze_selected_region(image, selection_mask, ignore_blue=True):
     """
     Analyze browning only in the selected region, ignoring blue background
     """
+    # Validate image shape
+    if image is None or image.ndim != 3 or image.shape[2] != 3:
+        st.error(f"Invalid image format. Expected RGB image with shape (H, W, 3), got {image.shape if image is not None else 'None'}")
+        return None
+        
     if selection_mask is None:
         st.warning("No region selected. Please draw on the image to select the corm area.")
         return None
@@ -1534,7 +1518,12 @@ def analyze_selected_region(image, selection_mask, ignore_blue=True):
     # Extract pixels for analysis
     selected_pixels = image[analysis_mask]
     
-    selected_pixels = image[analysis_mask]
+    # Ensure selected_pixels has the correct shape (N, 3)
+    if selected_pixels.ndim == 1:
+        selected_pixels = selected_pixels.reshape(-1, 3)
+    elif selected_pixels.shape[-1] != 3:
+        st.error(f"Invalid pixel data shape: {selected_pixels.shape}. Expected shape (N, 3).")
+        return None
     
     # Convert RGB to LAB
     lab_pixels = rgb_to_lab(selected_pixels.reshape(-1, 1, 3)).reshape(-1, 3)
@@ -1941,6 +1930,17 @@ def main():
         try:
             # Load and resize the original image if too large
             original_image = Image.open(uploaded_file)
+            
+            # Convert to RGB if image has alpha channel or is in a different mode
+            if original_image.mode == 'RGBA':
+                # Convert RGBA to RGB with white background
+                background = Image.new('RGB', original_image.size, (255, 255, 255))
+                background.paste(original_image, mask=original_image.split()[3])  # Use alpha as mask
+                original_image = background
+            elif original_image.mode != 'RGB':
+                # Convert any other mode to RGB
+                original_image = original_image.convert('RGB')
+            
             if max(original_image.size) > MAX_IMAGE_DIM:
                 scale = MAX_IMAGE_DIM / max(original_image.size)
                 new_size = (int(original_image.size[0]*scale), int(original_image.size[1]*scale))
@@ -2093,6 +2093,14 @@ def main():
                     progress_bar.progress(20, text="Loading image data...")
                     img_array = np.array(original_image)
                     
+                    # Convert RGBA to RGB if needed (all processing expects RGB)
+                    if img_array.ndim == 3 and img_array.shape[2] == 4:
+                        # RGBA image - convert to RGB by blending with white background
+                        rgb = img_array[:, :, :3]
+                        alpha = img_array[:, :, 3:4] / 255.0
+                        white_bg = np.ones_like(rgb) * 255
+                        img_array = (rgb * alpha + white_bg * (1 - alpha)).astype(np.uint8)
+                    
                     if processing_option == "Skip Processing":
                         progress_bar.progress(80, text="Finalizing...")
                         processed_image = img_array
@@ -2107,6 +2115,17 @@ def main():
                         progress_bar.progress(70, text="Processing results...")
                     
                     progress_bar.progress(85, text="Optimizing for cloud performance...")
+                    
+                    # Ensure processed_image is RGB (3 channels)
+                    if processed_image.ndim == 3 and processed_image.shape[2] == 4:
+                        # Convert RGBA to RGB if any processing step returned RGBA
+                        rgb = processed_image[:, :, :3]
+                        alpha = processed_image[:, :, 3:4] / 255.0
+                        white_bg = np.ones_like(rgb) * 255
+                        processed_image = (rgb * alpha + white_bg * (1 - alpha)).astype(np.uint8)
+                    elif processed_image.ndim != 3 or processed_image.shape[2] != 3:
+                        raise ValueError(f"Processed image has invalid shape: {processed_image.shape}. Expected (H, W, 3).")
+                    
                     # Ensure processed image is not too large for memory
                     if processed_image.size > 2000000:  # ~2MP limit
                         st.warning("Large image detected. Optimizing for cloud performance...")
