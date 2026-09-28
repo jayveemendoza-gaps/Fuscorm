@@ -1,5 +1,5 @@
 streamlit==1.40.0
-numpy==1.26.4
+numpy>=2.0.0,<2.3.0
 opencv-python-headless==4.12.0.88
 Pillow==10.4.0
 colorspacious==1.1.2
