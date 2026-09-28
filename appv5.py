@@ -760,13 +760,6 @@ def main():
                 if 'scale_canvas_clear_counter' not in st.session_state:
                     st.session_state.scale_canvas_clear_counter = 0
                 original_height, original_width = image_np.shape[:2]
-                
-                # Debug: Show what image will be used
-                with st.expander("🔧 Debug - Canvas Background", expanded=False):
-                    st.write(f"Image shape: {canvas_background.size if hasattr(canvas_background, 'size') else 'N/A'}")
-                    st.write(f"Image mode: {canvas_background.mode if hasattr(canvas_background, 'mode') else 'N/A'}")
-                    st.image(canvas_background, caption="Canvas Background (what st_canvas should show)", use_container_width=True)
-                
                 _zoom_pan_scale_fragment(canvas_background, original_width, original_height)
 
             with col2:
