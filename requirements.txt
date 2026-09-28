@@ -1,11 +1,10 @@
-# Essential packages only - Streamlit Cloud compatible
-streamlit
-numpy
-opencv-python-headless
-Pillow
-pandas
-colorspacious
-plotly
-streamlit-drawable-canvas==0.8.0
-rembg
-onnxruntime
+streamlit==1.40.0
+numpy==1.26.4
+opencv-python-headless==4.12.0.88
+Pillow==10.4.0
+colorspacious==1.1.2
+streamlit-drawable-canvas==0.9.3
+altair==4.2.2
+rembg==2.0.69
+scikit-image==0.25.2
+scikit-learn==1.7.1
