@@ -726,6 +726,14 @@ def main():
             st.subheader("📏 Step 1: Scale Calibration")
             
             image_np = np.array(original_image)
+            
+            # Ensure image values are in 0-255 range, not 0-1 range
+            if image_np.dtype in [np.float32, np.float64]:
+                if image_np.max() <= 1.0:
+                    image_np = (image_np * 255).astype(np.uint8)
+                else:
+                    image_np = image_np.astype(np.uint8)
+            
             canvas_background = Image.fromarray(image_np.astype('uint8'))
             
             col1, col2 = st.columns([2, 1])
