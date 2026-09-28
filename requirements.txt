@@ -6,5 +6,6 @@ colorspacious==1.1.2
 streamlit-drawable-canvas==0.9.3
 altair==4.2.2
 rembg==2.0.69
+onnxruntime>=1.16.0
 scikit-image==0.25.2
 scikit-learn==1.7.1
