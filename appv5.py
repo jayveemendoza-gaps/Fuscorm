@@ -876,7 +876,7 @@ def main():
         with col3:
             st.metric("📊 Browning %", f"{results['percent_browning']:.1f}%")
         
-        with st.expander("📋 Detailed Breakdown"):
+        with st.expander("📋 Detailed Breakdown", expanded=True):
             breakdown = results['browning_breakdown']
             st.write(f"Total Browning Pixels: {breakdown.get('total_browning', 0):,}")
             st.write(f"Fusarium: {breakdown.get('fusarium', 0):,}")
@@ -884,6 +884,29 @@ def main():
             st.write(f"Dark Brown: {breakdown.get('dark_brown', 0):,}")
             st.write(f"Normal Brown: {breakdown.get('normal_brown', 0):,}")
             st.write(f"Yellowish Brown: {breakdown.get('yellowish_brown', 0):,}")
+        
+        # Visualization
+        st.subheader("📸 Visual Analysis")
+        try:
+            if 'processed_image' in st.session_state and st.session_state.processed_image is not None:
+                base_image = st.session_state.processed_image.copy()
+                overlay = np.zeros_like(base_image)
+                analysis_mask = results.get('analysis_mask')
+                
+                if analysis_mask is not None and np.any(analysis_mask):
+                    # Green overlay for analyzed area
+                    overlay[analysis_mask] = [0, 255, 0]
+                    
+                    # Blend with original
+                    alpha = 0.3
+                    result_img = cv2.addWeighted(base_image, 1-alpha, overlay, alpha, 0)
+                    st.image(result_img, caption="Browning Detection Overlay (Green = Analyzed Area)", use_container_width=True)
+                else:
+                    st.info("ℹ️ No analysis mask available for visualization")
+            else:
+                st.info("ℹ️ Processed image not available for visualization")
+        except Exception as e:
+            st.warning(f"⚠️ Could not generate visualization: {e}")
 
 
 def create_selection_canvas(image, canvas_key="canvas"):
