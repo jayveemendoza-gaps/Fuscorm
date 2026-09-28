@@ -733,8 +733,18 @@ def main():
                     image_np = (image_np * 255).astype(np.uint8)
                 else:
                     image_np = image_np.astype(np.uint8)
+            elif image_np.dtype != np.uint8:
+                image_np = image_np.astype(np.uint8)
             
-            canvas_background = Image.fromarray(image_np.astype('uint8'))
+            # Verify image is RGB (3 channels)
+            if image_np.ndim == 2:
+                # Grayscale - convert to RGB
+                image_np = cv2.cvtColor(image_np, cv2.COLOR_GRAY2RGB)
+            elif image_np.ndim == 3 and image_np.shape[2] == 4:
+                # RGBA - convert to RGB
+                image_np = cv2.cvtColor(image_np, cv2.COLOR_RGBA2RGB)
+            
+            canvas_background = Image.fromarray(image_np, mode='RGB')
             
             col1, col2 = st.columns([2, 1])
             
