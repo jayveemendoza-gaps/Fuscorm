@@ -334,9 +334,16 @@ def _zoom_pan_canvas_fragment(frag_key, full_img_pil, orig_w, orig_h, drawing_mo
 
 
 @st.fragment
-def _zoom_pan_scale_fragment(canvas_background_pil, original_width, original_height):
+def _zoom_pan_scale_fragment(canvas_background_array, original_width, original_height):
     """Fragment: zoom/pan controls + scale calibration canvas."""
     from PIL import ImageDraw as _IDraw
+    
+    # Handle both numpy array and PIL image input
+    if isinstance(canvas_background_array, np.ndarray):
+        canvas_background_pil = Image.fromarray(canvas_background_array.astype(np.uint8))
+    else:
+        canvas_background_pil = canvas_background_array
+    
     _pan_step = 10
     scale_zoom_viewport = None
     sc_counter = st.session_state.get('scale_canvas_clear_counter', 0)
@@ -727,24 +734,25 @@ def main():
             
             image_np = np.array(original_image)
             
-            # Ensure image values are in 0-255 range, not 0-1 range
-            if image_np.dtype in [np.float32, np.float64]:
-                if image_np.max() <= 1.0:
-                    image_np = (image_np * 255).astype(np.uint8)
+            # Ensure uint8 data type and proper range
+            if image_np.dtype != np.uint8:
+                if image_np.dtype in [np.float32, np.float64]:
+                    if image_np.max() <= 1.0:
+                        image_np = (image_np * 255).astype(np.uint8)
+                    else:
+                        image_np = np.clip(image_np, 0, 255).astype(np.uint8)
                 else:
-                    image_np = image_np.astype(np.uint8)
-            elif image_np.dtype != np.uint8:
-                image_np = image_np.astype(np.uint8)
+                    image_np = np.clip(image_np, 0, 255).astype(np.uint8)
             
-            # Verify image is RGB (3 channels)
+            # Verify RGB format
             if image_np.ndim == 2:
-                # Grayscale - convert to RGB
                 image_np = cv2.cvtColor(image_np, cv2.COLOR_GRAY2RGB)
             elif image_np.ndim == 3 and image_np.shape[2] == 4:
-                # RGBA - convert to RGB
                 image_np = cv2.cvtColor(image_np, cv2.COLOR_RGBA2RGB)
             
-            canvas_background = Image.fromarray(image_np, mode='RGB')
+            # Convert to numpy array for st_canvas (more reliable than PIL)
+            temp_pil = Image.fromarray(image_np)
+            canvas_background = np.array(temp_pil)
             
             col1, col2 = st.columns([2, 1])
             
