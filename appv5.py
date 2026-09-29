@@ -324,13 +324,15 @@ def _zoom_pan_canvas_fragment(frag_key, full_img_pil, orig_w, orig_h, drawing_mo
         st.session_state[f"_cf_{frag_key}_result"] = canvas_result
         st.session_state[f"_cf_{frag_key}_sf"] = scale_factor
         st.session_state[f"_cf_{frag_key}_vp"] = zoom_viewport
-        st.rerun(scope="app")
+        st.session_state[f"_cf_{frag_key}_shape_type"] = shape_type
+        st.rerun()
 
     # Persist latest canvas state
     if canvas_result is not None:
         st.session_state[f"_cf_{frag_key}_result"] = canvas_result
         st.session_state[f"_cf_{frag_key}_sf"] = scale_factor
         st.session_state[f"_cf_{frag_key}_vp"] = zoom_viewport
+        st.session_state[f"_cf_{frag_key}_shape_type"] = shape_type
 
 
 @st.fragment
@@ -569,6 +571,28 @@ def analyze_shape_region(image, shape_mask, ignore_blue=True):
     # Calculate browning
     percent_browning, browning_pixels, total_corm_pixels, browning_breakdown = calculate_percent_browning(selected_pixels)
     
+    # Map individual masks from selected pixels back to full image coordinates
+    img_h, img_w = image.shape[:2]
+    
+    # Expand masks to full image size using analysis_mask indices
+    full_image_masks = {}
+    y_indices, x_indices = np.where(analysis_mask)
+    
+    for mask_key in ['fusarium_mask', 'dark_necrotic_mask', 'dark_brown_mask', 'normal_brown_mask', 'yellowish_brown_mask']:
+        if mask_key in browning_breakdown:
+            selected_mask = browning_breakdown[mask_key]
+            # Flatten if needed
+            if selected_mask.ndim > 1:
+                selected_mask = selected_mask.flatten()
+            
+            # Create full-size mask
+            full_mask = np.zeros((img_h, img_w), dtype=bool)
+            # Map selected pixels with lesion back to full image coordinates
+            lesion_indices = np.where(selected_mask)[0]
+            if len(lesion_indices) > 0:
+                full_mask[y_indices[lesion_indices], x_indices[lesion_indices]] = True
+            full_image_masks[mask_key] = full_mask
+    
     # Convert to LAB
     lab_pixels = rgb_to_lab(selected_pixels.reshape(-1, 1, 3)).reshape(-1, 3)
     L = lab_pixels[:, 0]
@@ -595,6 +619,9 @@ def analyze_shape_region(image, shape_mask, ignore_blue=True):
         total_area_mm2 = total_corm_pixels
         browning_area_mm2 = browning_pixels
         scaled_breakdown = browning_breakdown
+    
+    # Add full image masks to results
+    scaled_breakdown.update(full_image_masks)
 
     return {
         'analysis_mask': analysis_mask,
@@ -834,10 +861,23 @@ def main():
                 else:
                     st.info("📏 No scale — measurements in pixels")
 
-                canvas_result, scale_factor, shape_type, zoom_viewport = create_selection_canvas(
-                    st.session_state.processed_image,
-                    canvas_key="corm_selection"
-                )
+                # Check if selection has been confirmed
+                canvas_key = "corm_selection"
+                is_confirmed = st.session_state.get(f"{canvas_key}_confirmed", False)
+                
+                # Only render canvas if not yet confirmed
+                if not is_confirmed:
+                    canvas_result, scale_factor, shape_type, zoom_viewport = create_selection_canvas(
+                        st.session_state.processed_image,
+                        canvas_key=canvas_key
+                    )
+                else:
+                    # Selection already confirmed, retrieve from session
+                    canvas_result = st.session_state.get(f"_cf_{canvas_key}_result")
+                    scale_factor = st.session_state.get(f"_cf_{canvas_key}_sf", 1.0)
+                    shape_type = st.session_state.get(f"_cf_{canvas_key}_shape_type", "Polygon")
+                    zoom_viewport = st.session_state.get(f"_cf_{canvas_key}_vp")
+                    st.success("✅ Selection confirmed!")
                 
                 if canvas_result and (
                     (canvas_result.json_data and len(canvas_result.json_data.get("objects", [])) > 0) or
