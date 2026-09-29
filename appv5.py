@@ -1055,5 +1055,18 @@ def create_selection_canvas(image, canvas_key="canvas"):
         return None, None, None, None
 
 
+# Footer
+def _add_footer():
+    """Add footer with sample pictures link and contact info."""
+    st.markdown("---")
+    st.markdown("""
+    <div style='font-size: 12px; color: #666; text-align: center;'>
+    <p><strong>📸 Sample Pictures:</strong> <a href="https://drive.google.com/drive/folders/1W3gAwlbEAXhZ3OziU8wvB5-aWy3rjInU" target="_blank">Google Drive Folder</a></p>
+    <p><strong>📧 For inquiries:</strong> jsmendoza5@up.edu.ph</p>
+    </div>
+    """, unsafe_allow_html=True)
+
+
 if __name__ == "__main__":
     main()
+    _add_footer()
