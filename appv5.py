@@ -665,6 +665,11 @@ def calculate_percent_browning(rgb_pixels):
         'normal_brown': normal_brown_pixels,
         'yellowish_brown': yellowish_brown_pixels,
         'total_browning': total_browning_pixels,
+        'fusarium_mask': fusarium_mask > 0,
+        'dark_necrotic_mask': dark_necrotic_mask > 0,
+        'dark_brown_mask': dark_brown_mask > 0,
+        'normal_brown_mask': normal_brown_mask > 0,
+        'yellowish_brown_mask': yellowish_brown_mask > 0,
     }
     
     return percent_browning, total_browning_pixels, total_pixels, browning_breakdown
@@ -858,6 +863,7 @@ def main():
                             if analysis_results:
                                 st.success("✅ Analysis complete!")
                                 st.session_state.analysis_results = analysis_results
+                                st.rerun()
         
         except Exception as e:
             st.error(f"Error: {e}")
@@ -894,13 +900,27 @@ def main():
                 analysis_mask = results.get('analysis_mask')
                 
                 if analysis_mask is not None and np.any(analysis_mask):
-                    # Green overlay for analyzed area
-                    overlay[analysis_mask] = [0, 255, 0]
+                    breakdown = results['browning_breakdown']
+                    
+                    # Apply lesion colors in order of priority
+                    if 'fusarium_mask' in breakdown and np.any(breakdown['fusarium_mask']):
+                        overlay[breakdown['fusarium_mask']] = [255, 0, 0]  # Red
+                    if 'dark_necrotic_mask' in breakdown and np.any(breakdown['dark_necrotic_mask']):
+                        overlay[breakdown['dark_necrotic_mask']] = [0, 0, 0]  # Black
+                    if 'dark_brown_mask' in breakdown and np.any(breakdown['dark_brown_mask']):
+                        overlay[breakdown['dark_brown_mask']] = [180, 0, 0]  # Dark red
+                    if 'normal_brown_mask' in breakdown and np.any(breakdown['normal_brown_mask']):
+                        overlay[breakdown['normal_brown_mask']] = [255, 50, 0]  # Red-orange
+                    if 'yellowish_brown_mask' in breakdown and np.any(breakdown['yellowish_brown_mask']):
+                        overlay[breakdown['yellowish_brown_mask']] = [255, 165, 0]  # Orange
+                    
+                    # Green overlay for overall analyzed area (where no lesions detected)
+                    overlay[analysis_mask & ~np.any([breakdown.get(f'{t}_mask', np.zeros_like(analysis_mask)) for t in ['fusarium', 'dark_necrotic', 'dark_brown', 'normal_brown', 'yellowish_brown']], axis=0)] = [0, 255, 0]
                     
                     # Blend with original
-                    alpha = 0.3
+                    alpha = 0.4
                     result_img = cv2.addWeighted(base_image, 1-alpha, overlay, alpha, 0)
-                    st.image(result_img, caption="Browning Detection Overlay (Green = Analyzed Area)", use_container_width=True)
+                    st.image(result_img, caption="Browning Detection Overlay (Red=Lesion, Green=Healthy, Orange/Brown=Other Browning)", use_container_width=True)
                 else:
                     st.info("ℹ️ No analysis mask available for visualization")
             else:
